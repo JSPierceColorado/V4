@@ -14,6 +14,12 @@ One FastAPI service for Railway. It accepts CSV/PDF/text inputs, understands nat
 - `POST /cancel-all`
 - `POST /close-all`
 
+Open the browser UI at:
+
+```text
+https://your-railway-url/chat
+```
+
 All endpoints except `/health` require:
 
 ```text
