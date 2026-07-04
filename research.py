@@ -664,10 +664,18 @@ def run_research(
     if not best:
         return {"ok": False, "reply": "Research did not produce any strategy variants."}
 
+    should_promote = bool(best["profitable"] or not settings.autonomy_research_require_profitable)
     progress(
         {
-            "stage": "promoting",
-            "message": f"Promoting best strategy {best['strategy']['id']}.",
+            "stage": "promoting" if should_promote else "not_promoting",
+            "message": (
+                f"Promoting best strategy {best['strategy']['id']}."
+                if should_promote
+                else (
+                    f"Best candidate {best['strategy']['id']} was not promoted "
+                    "because validation was not profitable."
+                )
+            ),
         }
     )
     best_strategy = deepcopy(best["strategy"])
@@ -680,8 +688,10 @@ def run_research(
         "profitable": best["profitable"],
     }
     best_strategy.setdefault("stats", {})
-    state.setdefault("strategies", {})[best_strategy["id"]] = best_strategy
-    state["active_strategy_id"] = best_strategy["id"]
+    previous_active_strategy_id = state.get("active_strategy_id")
+    if should_promote:
+        state.setdefault("strategies", {})[best_strategy["id"]] = best_strategy
+        state["active_strategy_id"] = best_strategy["id"]
     state["last_research"] = {
         "researched_at": utc_now(),
         "symbols": symbols,
@@ -694,6 +704,18 @@ def run_research(
         "ai_variants_tested": len(ai_variants),
         "coded_variants_tested": len(deterministic_variants),
         "best_strategy_id": best_strategy["id"],
+        "candidate_strategy_id": best_strategy["id"],
+        "promoted_strategy_id": best_strategy["id"] if should_promote else None,
+        "previous_active_strategy_id": previous_active_strategy_id,
+        "active_strategy_id": state.get("active_strategy_id"),
+        "promoted": should_promote,
+        "promotion_reason": (
+            "validation_profitable"
+            if should_promote and best["profitable"]
+            else "profitability_required_disabled"
+            if should_promote
+            else "validation_not_profitable"
+        ),
         "best": best,
         "top": leaderboard[:10],
         "family_counts": {
@@ -719,10 +741,11 @@ def run_research(
             f"and validated {len(leaderboard)} finalists on {len(bars)} usable symbols "
             f"({len(symbols)} selected). "
             f"AI lab contributed {len(ai_variants)} thesis-driven variants. "
-            f"Deployed {best_strategy['id']} with validation return "
-            f"{best['validation']['total_return_pct']:.2%}, "
+            f"{'Deployed' if should_promote else 'Did not deploy'} {best_strategy['id']} "
+            f"with validation return {best['validation']['total_return_pct']:.2%}, "
             f"win rate {best['validation']['win_rate']:.1%}, "
             f"{best['validation']['trades']} trades."
+            + ("" if should_promote else " Keeping previous active strategy.")
         ),
         "research": state["last_research"],
         "strategy": strategy_snapshot(state),

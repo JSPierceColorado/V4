@@ -88,6 +88,7 @@ class Settings:
     autonomy_research_max_variants: int
     autonomy_research_scout_symbols: int
     autonomy_research_validate_top_variants: int
+    autonomy_research_require_profitable: bool
     autonomy_ai_strategy_lab_enabled: bool
     autonomy_ai_strategy_ideas: int
     agent_operator_enabled: bool
@@ -167,6 +168,9 @@ def load_settings() -> Settings:
         ),
         autonomy_research_validate_top_variants=env_int(
             "AUTONOMY_RESEARCH_VALIDATE_TOP_VARIANTS", 50
+        ),
+        autonomy_research_require_profitable=env_bool(
+            "AUTONOMY_RESEARCH_REQUIRE_PROFITABLE", True
         ),
         autonomy_ai_strategy_lab_enabled=env_bool(
             "AUTONOMY_AI_STRATEGY_LAB_ENABLED", True

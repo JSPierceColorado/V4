@@ -263,12 +263,18 @@ def summarize_tool_result(result: Dict[str, Any]) -> str:
                 if selected
                 else f"on {bars_symbols} symbols"
             )
+            promoted = research.get("promoted")
+            action_text = (
+                f"Deployed {research.get('promoted_strategy_id') or strategy_id}."
+                if promoted is not False
+                else f"Did not deploy {strategy_id}; kept {research.get('active_strategy_id') or 'previous strategy'}."
+            )
             return (
                 f"research: scouted {research.get('variants_tested', 0)} variants "
                 f"and validated {research.get('variants_validated', research.get('variants_tested', 0))} finalists "
                 f"{symbol_text}. "
                 f"AI lab variants {research.get('ai_variants_tested', 0)}. "
-                f"Deployed {strategy_id}. "
+                f"{action_text} "
                 f"Validation return {_format_pct(validation.get('total_return_pct'))}, "
                 f"win rate {_format_pct(validation.get('win_rate'))}, "
                 f"trades {validation.get('trades', 0)}."

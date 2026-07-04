@@ -123,6 +123,7 @@ AUTONOMY_RESEARCH_SYMBOLS_PER_RUN=250
 AUTONOMY_RESEARCH_MAX_VARIANTS=1000
 AUTONOMY_RESEARCH_SCOUT_SYMBOLS=60
 AUTONOMY_RESEARCH_VALIDATE_TOP_VARIANTS=50
+AUTONOMY_RESEARCH_REQUIRE_PROFITABLE=true
 AUTONOMY_AI_STRATEGY_LAB_ENABLED=true
 AUTONOMY_AI_STRATEGY_IDEAS=48
 AGENT_OPERATOR_ENABLED=true
@@ -152,6 +153,8 @@ show recent actions
 The research layer generates strategy variants, backtests them on historical daily bars, and deploys the highest-fitness variant into the live paper strategy state. It uses a train/test split, then reports validation return, win rate, trade count, and the active strategy.
 
 By default, each research job selects 250 rotating symbols from the tradable universe and generates 1000 variants. To keep the lab practical on Railway, v4 first scouts every variant on 60 symbols, then validates the top 50 finalists across the full train/test split. The current strategy grammar includes momentum, breakout, volume momentum, trend pullback, dip buy, mean reversion, oversold reclaim, and volatility runner families. This gives the operator a richer search space while staying inside one Railway program and Alpaca's data limits.
+
+Research records the best candidate every run, but with `AUTONOMY_RESEARCH_REQUIRE_PROFITABLE=true` it only promotes a strategy into the active paper-trading slot if validation return is positive and it produced enough trades. Losing candidates stay as research evidence instead of becoming the active strategy.
 
 When `AUTONOMY_AI_STRATEGY_LAB_ENABLED=true`, research also asks the model to create thesis-driven strategy candidates as JSON rule data. Those AI-authored candidates are not executable code; they are sanitized into a small DSL, backtested beside the coded variants, and promoted only if they win validation.
 

@@ -17,6 +17,15 @@ def _bars(count: int = 180):
     return bars
 
 
+def _down_bars(count: int = 180):
+    bars = []
+    price = 20.0
+    for index in range(count):
+        price *= 0.996
+        bars.append({"c": round(price, 4), "v": 500000 + index * 1000})
+    return bars
+
+
 def test_research_backtests_and_deploys_best_strategy(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AUTONOMY_RESEARCH_SYMBOLS_PER_RUN", "10")
@@ -41,6 +50,31 @@ def test_research_backtests_and_deploys_best_strategy(monkeypatch, tmp_path) -> 
     assert result["research"]["best_strategy_id"] == state["active_strategy_id"]
     assert state["active_strategy_id"].startswith("research_")
     assert state["strategies"][state["active_strategy_id"]]["backtest"]["validation"]["trades"] > 0
+
+
+def test_research_does_not_promote_unprofitable_candidate(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AUTONOMY_RESEARCH_SYMBOLS_PER_RUN", "5")
+    monkeypatch.setenv("AUTONOMY_RESEARCH_MAX_VARIANTS", "40")
+    monkeypatch.setenv("AUTONOMY_RESEARCH_SCOUT_SYMBOLS", "2")
+    monkeypatch.setenv("AUTONOMY_RESEARCH_VALIDATE_TOP_VARIANTS", "8")
+    settings = load_settings()
+
+    class FakeAlpaca:
+        def active_tradable_us_equity_symbols(self):
+            return ["AAA", "BBB", "CCC"]
+
+        def stock_bars(self, symbols, *, start):
+            return {"bars": {symbol: _down_bars() for symbol in symbols}}
+
+    result = run_research(settings, FakeAlpaca())
+    state = load_evolution_state(settings.data_dir)
+
+    assert result["ok"] is True
+    assert result["research"]["promoted"] is False
+    assert result["research"]["promotion_reason"] == "validation_not_profitable"
+    assert state["active_strategy_id"] == "momentum_balanced"
+    assert "Keeping previous active strategy" in result["reply"]
 
 
 def test_research_variants_cover_multiple_strategy_families() -> None:
