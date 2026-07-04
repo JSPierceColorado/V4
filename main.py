@@ -640,6 +640,56 @@ def summarize_clock(raw: Dict[str, Any]) -> str:
     return f"Market is closed. Next open: {next_open}."
 
 
+def summarize_event(event: Dict[str, Any]) -> str:
+    event_type = event.get("type", "event")
+    ts = event.get("ts", "unknown time")
+    payload = event.get("payload") or {}
+    if event_type == "agent_operator_journal":
+        return f"{ts} - operator journal\n{payload.get('summary', 'No summary.')}"
+    if event_type == "agent_operator_cycle":
+        return f"{ts} - operator cycle\n{payload.get('summary', 'No summary.')}"
+    if event_type in {"research", "periodic_research"}:
+        reply = payload.get("reply")
+        if reply:
+            return f"{ts} - research\n{reply}"
+        research = payload.get("research") or {}
+        best = research.get("best") or {}
+        validation = best.get("validation") or {}
+        return (
+            f"{ts} - research\n"
+            f"Best: {research.get('best_strategy_id', 'unknown')}. "
+            f"Validation return: {validation.get('total_return_pct', 'n/a')}, "
+            f"win rate: {validation.get('win_rate', 'n/a')}, "
+            f"trades: {validation.get('trades', 'n/a')}."
+        )
+    if event_type == "autonomy_cycle":
+        return f"{ts} - autonomy cycle\n{payload.get('summary', 'No summary.')}"
+    if event_type == "autonomy_error":
+        return f"{ts} - autonomy error\n{payload.get('error', 'Unknown error')}"
+    if event_type == "order":
+        result = payload.get("result") or {}
+        request = payload.get("request") or {}
+        return (
+            f"{ts} - order\n"
+            f"{request.get('side', result.get('side', ''))} "
+            f"{request.get('qty') or request.get('notional') or result.get('qty') or result.get('notional') or ''} "
+            f"{request.get('symbol') or result.get('symbol') or ''}. "
+            f"Status: {result.get('status', 'submitted')}."
+        )
+    if event_type == "clock":
+        return f"{ts} - clock\n{summarize_clock(payload.get('clock') or {})}"
+    return f"{ts} - {event_type}\n{payload.get('reply') or payload.get('summary') or 'Recorded.'}"
+
+
+def summarize_events(rows: list[Dict[str, Any]]) -> str:
+    if not rows:
+        return "No recent actions recorded yet."
+    lines = [f"Recent actions ({len(rows)}):"]
+    for index, event in enumerate(reversed(rows), start=1):
+        lines.append(f"\n{index}. {summarize_event(event)}")
+    return "\n".join(lines)
+
+
 @app.get("/", include_in_schema=False)
 def root() -> RedirectResponse:
     return RedirectResponse(url="/chat")
@@ -692,7 +742,7 @@ def events(limit: int = 20) -> Dict[str, Any]:
     rows = load_events(settings.data_dir, limit=limit)
     return {
         "ok": True,
-        "reply": f"Loaded {len(rows)} recent event(s).",
+        "reply": summarize_events(rows),
         "events": rows,
     }
 

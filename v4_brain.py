@@ -68,7 +68,17 @@ def rule_parse(message: str) -> Dict[str, Any]:
         return {"action": "autonomy_status", "args": {}}
     if "market" in lowered and any(word in lowered for word in ("open", "closed", "clock", "hours")):
         return {"action": "clock", "args": {}}
-    if any(phrase in lowered for phrase in ("recent actions", "recent events", "action log", "journal", "what did you do")):
+    if any(
+        phrase in lowered
+        for phrase in (
+            "recent actions",
+            "recent events",
+            "action log",
+            "journal",
+            "operator report",
+            "what did you do",
+        )
+    ):
         return {"action": "events", "args": {}}
     if any(word in lowered for word in ("research", "backtest", "backtesting")) or (
         "strategy" in lowered and any(phrase in lowered for phrase in ("deploy best", "find best", "test variants"))

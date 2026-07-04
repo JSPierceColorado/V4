@@ -52,6 +52,11 @@ def test_rule_parse_recent_actions() -> None:
     assert parsed["action"] == "events"
 
 
+def test_rule_parse_operator_report() -> None:
+    parsed = rule_parse("operator report")
+    assert parsed["action"] == "events"
+
+
 def test_rule_parse_agent_operator() -> None:
     parsed = rule_parse("run operator")
     assert parsed["action"] == "agent_cycle"
