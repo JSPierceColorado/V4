@@ -111,6 +111,8 @@ The autonomous loop screens symbols, manages exits, evolves the active strategy,
 
 Research defaults to the full universe that v4 is allowed to trade. Set `AUTONOMY_RESEARCH_SYMBOLS_PER_RUN=0` to keep that behavior. If you set `AUTONOMY_SYMBOLS`, research uses that exact list; otherwise it uses all active tradable US equities. Positive `AUTONOMY_RESEARCH_SYMBOLS_PER_RUN` values restore rotating research batches.
 
+Historical bar fetching is resumable. v4 caches completed research chunks in `DATA_DIR`, waits and retries when Alpaca returns a 429 rate limit, and resumes from cached chunks on the next research run if the limit persists or the app restarts.
+
 ```env
 AUTONOMY_ENABLED=true
 AUTONOMY_DRY_RUN=false

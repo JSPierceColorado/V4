@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from statistics import mean, pstdev
@@ -15,8 +16,13 @@ from evolution import (
     save_evolution_state,
     strategy_snapshot,
 )
-from storage import utc_now
+from storage import ensure_data_dirs, utc_now
 from v4_doctrine import STRATEGY_DSL_GUIDE, V4_DOCTRINE
+
+
+BAR_FETCH_CHUNK_SIZE = 50
+BAR_FETCH_RATE_LIMIT_SLEEP_SECONDS = 75
+BAR_FETCH_MAX_RATE_LIMIT_RETRIES = 6
 
 
 DSL_METRICS = {
@@ -48,6 +54,50 @@ def _float(value: Any, default: float = 0.0) -> float:
 def _chunks(items: List[str], size: int) -> Iterable[List[str]]:
     for index in range(0, len(items), size):
         yield items[index : index + size]
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "429" in message or "too many requests" in message or "rate limit" in message
+
+
+def _research_bar_cache_path(data_dir: str):
+    paths = ensure_data_dirs(data_dir)
+    return paths["root"] / "research_bar_cache.json"
+
+
+def _bar_cache_key(symbols: List[str], start: str, lookback_days: int) -> str:
+    return json.dumps(
+        {
+            "symbols": symbols,
+            "start": start,
+            "lookback_days": lookback_days,
+            "timeframe": "1Day",
+            "chunk_size": BAR_FETCH_CHUNK_SIZE,
+        },
+        sort_keys=True,
+    )
+
+
+def _load_bar_cache(data_dir: str, cache_key: str) -> Dict[str, Any]:
+    path = _research_bar_cache_path(data_dir)
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            cache = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if cache.get("cache_key") != cache_key:
+        return {}
+    return cache
+
+
+def _save_bar_cache(data_dir: str, cache: Dict[str, Any]) -> None:
+    path = _research_bar_cache_path(data_dir)
+    cache["updated_at"] = utc_now()
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(cache, handle, default=str, sort_keys=True)
 
 
 def _sma(values: List[float], window: int) -> float:
@@ -800,15 +850,107 @@ def _select_symbols(settings: Settings, alpaca: AlpacaRest, state: Dict[str, Any
     return selected
 
 
-def _fetch_bars(alpaca: AlpacaRest, symbols: List[str], lookback_days: int) -> Dict[str, Any]:
+def _fetch_bars(
+    alpaca: AlpacaRest,
+    symbols: List[str],
+    lookback_days: int,
+    *,
+    data_dir: str,
+    progress_callback: Callable[[Dict[str, Any]], None] | None = None,
+    rate_limit_sleep_seconds: int = BAR_FETCH_RATE_LIMIT_SLEEP_SECONDS,
+    max_rate_limit_retries: int = BAR_FETCH_MAX_RATE_LIMIT_RETRIES,
+) -> Dict[str, Any]:
     start = (
         datetime.now(timezone.utc)
         - timedelta(days=max(90, lookback_days))
     ).date().isoformat()
-    merged: Dict[str, Any] = {}
-    for chunk in _chunks(symbols, 50):
-        response = alpaca.stock_bars(chunk, start=start)
+    cache_key = _bar_cache_key(symbols, start, lookback_days)
+    cache = _load_bar_cache(data_dir, cache_key) or {
+        "cache_key": cache_key,
+        "start": start,
+        "lookback_days": lookback_days,
+        "symbols": symbols,
+        "bars": {},
+        "completed_symbols": [],
+        "rate_limit_count": 0,
+    }
+    merged: Dict[str, Any] = dict(cache.get("bars") or {})
+    completed_symbols = set(cache.get("completed_symbols") or [])
+    chunks = list(_chunks(symbols, BAR_FETCH_CHUNK_SIZE))
+    total_chunks = len(chunks)
+    for chunk_index, chunk in enumerate(chunks, start=1):
+        if all(symbol in completed_symbols for symbol in chunk):
+            if progress_callback:
+                progress_callback(
+                    {
+                        "stage": "fetching_bars",
+                        "message": (
+                            f"Using cached historical bars for chunk "
+                            f"{chunk_index}/{total_chunks}."
+                        ),
+                        "chunks_completed": chunk_index,
+                        "chunks_total": total_chunks,
+                        "cached_symbols": len(completed_symbols),
+                        "usable_symbols": len(merged),
+                    }
+                )
+            continue
+        attempts = 0
+        while True:
+            try:
+                response = alpaca.stock_bars(chunk, start=start)
+                break
+            except AlpacaError as exc:
+                if not _is_rate_limit_error(exc):
+                    raise
+                attempts += 1
+                cache["rate_limit_count"] = int(cache.get("rate_limit_count") or 0) + 1
+                cache["last_rate_limit_at"] = utc_now()
+                cache["last_rate_limit_error"] = str(exc)
+                cache["bars"] = merged
+                cache["completed_symbols"] = sorted(completed_symbols)
+                _save_bar_cache(data_dir, cache)
+                if attempts > max_rate_limit_retries:
+                    raise
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "stage": "rate_limited",
+                            "message": (
+                                "Alpaca rate-limited historical bars; "
+                                f"waiting {rate_limit_sleep_seconds}s before retry "
+                                f"{attempts}/{max_rate_limit_retries} for chunk "
+                                f"{chunk_index}/{total_chunks}."
+                            ),
+                            "chunks_completed": chunk_index - 1,
+                            "chunks_total": total_chunks,
+                            "cached_symbols": len(completed_symbols),
+                            "usable_symbols": len(merged),
+                            "rate_limit_attempt": attempts,
+                            "rate_limit_max_attempts": max_rate_limit_retries,
+                        }
+                    )
+                time.sleep(max(0, rate_limit_sleep_seconds))
         merged.update(response.get("bars") or {})
+        completed_symbols.update(chunk)
+        cache["bars"] = merged
+        cache["completed_symbols"] = sorted(completed_symbols)
+        cache["last_completed_chunk"] = chunk_index
+        _save_bar_cache(data_dir, cache)
+        if progress_callback:
+            progress_callback(
+                {
+                    "stage": "fetching_bars",
+                    "message": (
+                        f"Fetched historical bars chunk "
+                        f"{chunk_index}/{total_chunks}."
+                    ),
+                    "chunks_completed": chunk_index,
+                    "chunks_total": total_chunks,
+                    "cached_symbols": len(completed_symbols),
+                    "usable_symbols": len(merged),
+                }
+            )
     return merged
 
 
@@ -857,14 +999,24 @@ def run_research(
                 "selected_symbols": len(symbols),
             }
         )
-        bars = _fetch_bars(alpaca, symbols, settings.autonomy_research_lookback_days)
+        bars = _fetch_bars(
+            alpaca,
+            symbols,
+            settings.autonomy_research_lookback_days,
+            data_dir=settings.data_dir,
+            progress_callback=progress,
+        )
     except AlpacaError as exc:
-        if "429" not in str(exc) and "too many requests" not in str(exc).lower():
+        if not _is_rate_limit_error(exc):
             raise
         save_evolution_state(settings.data_dir, state)
         return {
             "ok": True,
-            "reply": "Research paused because Alpaca rate-limited historical bars.",
+            "reply": (
+                "Research paused after repeated Alpaca historical-bar rate limits. "
+                "Completed bar chunks were cached; the next research run will resume "
+                "from cached progress."
+            ),
             "rate_limited": True,
             "warning": str(exc),
             "symbols": symbols,

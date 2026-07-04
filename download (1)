@@ -1,10 +1,14 @@
 import sys
 from types import SimpleNamespace
 
+import pytest
+
+from alpaca_rest import AlpacaError
 from config import load_settings
 from evolution import load_evolution_state
 from research import (
     _entry_signal,
+    _fetch_bars,
     _normalize_ai_strategy,
     _select_symbols,
     ai_triage_variants,
@@ -115,6 +119,83 @@ def test_research_positive_symbol_limit_still_rotates(monkeypatch, tmp_path) -> 
 
     assert selected == ["BBB", "CCC"]
     assert state["research_offset"] == 3
+
+
+def test_fetch_bars_retries_rate_limited_chunk_and_caches_progress(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("research.time.sleep", lambda seconds: None)
+    symbols = [f"T{index:02d}" for index in range(55)]
+    updates = []
+
+    class FakeAlpaca:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stock_bars(self, symbols, *, start):
+            self.calls += 1
+            if self.calls == 2:
+                raise AlpacaError('GET /v2/stocks/bars failed status=429 body={"message":"too many requests"}')
+            return {"bars": {symbol: _bars(120) for symbol in symbols}}
+
+    alpaca = FakeAlpaca()
+    bars = _fetch_bars(
+        alpaca,
+        symbols,
+        365,
+        data_dir=str(tmp_path),
+        progress_callback=updates.append,
+        rate_limit_sleep_seconds=0,
+        max_rate_limit_retries=2,
+    )
+
+    assert len(bars) == 55
+    assert alpaca.calls == 3
+    assert any(update["stage"] == "rate_limited" for update in updates)
+
+
+def test_fetch_bars_resumes_cached_chunks_after_repeated_rate_limit(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("research.time.sleep", lambda seconds: None)
+    symbols = [f"T{index:02d}" for index in range(55)]
+
+    class PausingAlpaca:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stock_bars(self, symbols, *, start):
+            self.calls += 1
+            if self.calls > 1:
+                raise AlpacaError('GET /v2/stocks/bars failed status=429 body={"message":"too many requests"}')
+            return {"bars": {symbol: _bars(120) for symbol in symbols}}
+
+    pausing = PausingAlpaca()
+    with pytest.raises(AlpacaError):
+        _fetch_bars(
+            pausing,
+            symbols,
+            365,
+            data_dir=str(tmp_path),
+            rate_limit_sleep_seconds=0,
+            max_rate_limit_retries=1,
+        )
+
+    class ResumingAlpaca:
+        def __init__(self) -> None:
+            self.requested = []
+
+        def stock_bars(self, symbols, *, start):
+            self.requested.extend(symbols)
+            return {"bars": {symbol: _bars(120) for symbol in symbols}}
+
+    resuming = ResumingAlpaca()
+    bars = _fetch_bars(
+        resuming,
+        symbols,
+        365,
+        data_dir=str(tmp_path),
+        rate_limit_sleep_seconds=0,
+    )
+
+    assert len(bars) == 55
+    assert resuming.requested == symbols[50:]
 
 
 def test_research_variants_cover_multiple_strategy_families() -> None:
