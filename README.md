@@ -8,6 +8,11 @@ One FastAPI service for Railway. It accepts CSV/PDF/text inputs, understands nat
 - `GET /state`
 - `GET /uploads`
 - `GET /metrics`
+- `GET /screen`
+- `GET /autonomy/status`
+- `POST /autonomy/start`
+- `POST /autonomy/stop`
+- `POST /autonomy/cycle`
 - `POST /upload`
 - `POST /query`
 - `POST /run`
@@ -95,3 +100,27 @@ curl -H "X-Admin-Token: $ADMIN_TOKEN" https://your-railway-url/metrics
 ```
 
 The metrics view includes compact KPI tiles plus charts for equity trend, drawdown trend, daily P/L, and a simple projected equity path.
+
+## Autonomy
+
+The autonomous loop screens a configured symbol universe, picks high-scoring candidates, and prepares paper orders. It defaults to dry-run.
+
+```env
+AUTONOMY_ENABLED=false
+AUTONOMY_DRY_RUN=true
+AUTONOMY_INTERVAL_SECONDS=900
+AUTONOMY_SYMBOLS=SPY,QQQ,IWM,AAPL,MSFT,NVDA,AMD,TSLA,META,GOOGL,AMZN
+AUTONOMY_MIN_SCORE=65
+AUTONOMY_MAX_ORDERS_PER_CYCLE=1
+AUTONOMY_MAX_POSITIONS=5
+```
+
+Ask in chat:
+
+```text
+screen the market
+run one autonomous cycle
+start autonomy
+stop autonomy
+autonomy status
+```

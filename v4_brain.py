@@ -56,6 +56,16 @@ def friendly_openai_error(exc: Exception) -> str:
 
 def rule_parse(message: str) -> Dict[str, Any]:
     lowered = message.lower()
+    if "cycle" in lowered and ("autonom" in lowered or "agent" in lowered):
+        return {"action": "autonomy_cycle", "args": {}}
+    if "autonom" in lowered and any(word in lowered for word in ("start", "enable", "turn on", "run")):
+        return {"action": "autonomy_start", "args": {}}
+    if "autonom" in lowered and any(word in lowered for word in ("stop", "disable", "pause", "turn off")):
+        return {"action": "autonomy_stop", "args": {}}
+    if "autonom" in lowered and any(word in lowered for word in ("status", "state")):
+        return {"action": "autonomy_status", "args": {}}
+    if any(word in lowered for word in ("screen", "screener", "scan the market", "scan market")):
+        return {"action": "screen", "args": {}}
     if any(phrase in lowered for phrase in ("cancel all", "cancel orders")):
         return {"action": "cancel_all_orders", "args": {}}
     if any(phrase in lowered for phrase in ("close all", "liquidate", "flatten")):
@@ -106,8 +116,9 @@ def llm_parse(settings: Settings, message: str, context: Dict[str, Any]) -> Dict
     system = (
         "You are v4, a concise paper-trading assistant and command parser. "
         "Return only JSON with keys action and args. "
-        "Allowed actions: state, metrics, analyze, run, place_order, cancel_all_orders, "
-        "close_all_positions, reply. "
+        "Allowed actions: state, metrics, screen, autonomy_start, autonomy_stop, "
+        "autonomy_status, autonomy_cycle, analyze, run, place_order, "
+        "cancel_all_orders, close_all_positions, reply. "
         "Only choose place_order when the user clearly asks to place a paper order. "
         "For place_order args include symbol, side, qty, notional, order_type, "
         "time_in_force, limit_price, stop_price, extended_hours when known. "

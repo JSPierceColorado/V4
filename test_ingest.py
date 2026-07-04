@@ -27,6 +27,16 @@ def test_rule_parse_metrics() -> None:
     assert parsed["action"] == "metrics"
 
 
+def test_rule_parse_screen() -> None:
+    parsed = rule_parse("screen the market")
+    assert parsed["action"] == "screen"
+
+
+def test_rule_parse_autonomy_cycle() -> None:
+    parsed = rule_parse("run one autonomous cycle")
+    assert parsed["action"] == "autonomy_cycle"
+
+
 def test_normalize_openai_model_aliases() -> None:
     assert normalize_openai_model("5.1") == "gpt-5.1"
     assert normalize_openai_model("5.2") == "gpt-5.2"

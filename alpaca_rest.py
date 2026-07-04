@@ -112,6 +112,27 @@ class AlpacaRest:
             params={"feed": self.data_feed},
         )
 
+    def stock_bars(
+        self,
+        symbols: list[str],
+        *,
+        start: str,
+        end: Optional[str] = None,
+        timeframe: str = "1Day",
+        limit: int = 1000,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "symbols": ",".join(symbol.upper() for symbol in symbols),
+            "timeframe": timeframe,
+            "start": start,
+            "limit": limit,
+            "adjustment": "raw",
+            "feed": self.data_feed,
+        }
+        if end:
+            params["end"] = end
+        return self.data("GET", "/v2/stocks/bars", params=params)
+
     def place_order(
         self,
         *,

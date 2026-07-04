@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from typing import Tuple
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -17,6 +18,28 @@ def env_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError as exc:
         raise RuntimeError(f"{name} must be a number; got {raw!r}") from exc
+
+
+def env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer; got {raw!r}") from exc
+
+
+def env_symbols(name: str, default: str) -> Tuple[str, ...]:
+    raw = os.getenv(name, default)
+    symbols = []
+    seen = set()
+    for item in raw.replace("\n", ",").split(","):
+        symbol = item.strip().upper()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            symbols.append(symbol)
+    return tuple(symbols)
 
 
 def normalize_openai_model(raw: str) -> str:
@@ -50,6 +73,13 @@ class Settings:
     default_time_in_force: str
     extended_hours: bool
     max_upload_bytes: int
+    autonomy_enabled: bool
+    autonomy_dry_run: bool
+    autonomy_interval_seconds: int
+    autonomy_symbols: Tuple[str, ...]
+    autonomy_min_score: float
+    autonomy_max_orders_per_cycle: int
+    autonomy_max_positions: int
 
     @property
     def alpaca_ready(self) -> bool:
@@ -98,4 +128,14 @@ def load_settings() -> Settings:
         or "day",
         extended_hours=env_bool("EXTENDED_HOURS", False),
         max_upload_bytes=int(env_float("MAX_UPLOAD_MB", 10) * 1024 * 1024),
+        autonomy_enabled=env_bool("AUTONOMY_ENABLED", False),
+        autonomy_dry_run=env_bool("AUTONOMY_DRY_RUN", True),
+        autonomy_interval_seconds=env_int("AUTONOMY_INTERVAL_SECONDS", 900),
+        autonomy_symbols=env_symbols(
+            "AUTONOMY_SYMBOLS",
+            "SPY,QQQ,IWM,AAPL,MSFT,NVDA,AMD,TSLA,META,GOOGL,AMZN,PLTR,SOFI,COIN,HOOD,SMCI,AVGO,ARM,NET,CRWD",
+        ),
+        autonomy_min_score=env_float("AUTONOMY_MIN_SCORE", 65.0),
+        autonomy_max_orders_per_cycle=env_int("AUTONOMY_MAX_ORDERS_PER_CYCLE", 1),
+        autonomy_max_positions=env_int("AUTONOMY_MAX_POSITIONS", 5),
     )

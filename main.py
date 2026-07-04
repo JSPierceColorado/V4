@@ -6,9 +6,11 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from alpaca_rest import AlpacaError, AlpacaRest
+from autonomy import AutonomyEngine
 from config import Settings, load_settings
 from ingest import parse_upload
 from metrics import build_metrics
+from screener import screen_symbols
 from storage import (
     UploadRecord,
     append_event,
@@ -24,6 +26,7 @@ from v4_brain import llm_parse, llm_reply, rule_parse
 
 settings = load_settings()
 app = FastAPI(title="v4 Agentic Trader", version="0.1.0")
+autonomy_engine = AutonomyEngine(settings)
 
 
 CHAT_HTML = """
@@ -565,6 +568,12 @@ class MetricsResponse(BaseModel):
     metrics: Dict[str, Any]
 
 
+@app.on_event("startup")
+def maybe_start_autonomy() -> None:
+    if settings.autonomy_enabled and settings.alpaca_ready:
+        autonomy_engine.start(alpaca)
+
+
 def require_auth(x_admin_token: str = Header(default="")) -> None:
     if not settings.admin_token:
         raise HTTPException(
@@ -639,6 +648,8 @@ def health() -> Dict[str, Any]:
         "alpaca_configured": settings.alpaca_ready,
         "openai_configured": settings.openai_ready,
         "admin_token_configured": bool(settings.admin_token),
+        "autonomy_enabled": settings.autonomy_enabled,
+        "autonomy_running": autonomy_engine.status()["running"],
     }
 
 
@@ -662,6 +673,48 @@ def metrics() -> Dict[str, Any]:
     result = api_result(lambda: build_metrics(client))
     append_event(settings.data_dir, "metrics", {"ok": True})
     return {"ok": True, "metrics": result}
+
+
+@app.get("/screen", dependencies=[Depends(require_auth)])
+def screen() -> Dict[str, Any]:
+    client = alpaca()
+    result = api_result(lambda: screen_symbols(client, settings.autonomy_symbols))
+    append_event(settings.data_dir, "screen", {"summary": result})
+    return {
+        "ok": True,
+        "reply": (
+            f"Screened {result.get('symbols_checked', 0)} symbols and found "
+            f"{len(result.get('candidates', []))} candidates. "
+            f"Top candidate: {result.get('candidates', [{}])[0].get('symbol', 'n/a') if result.get('candidates') else 'n/a'}."
+        ),
+        "screen": result,
+    }
+
+
+@app.get("/autonomy/status", dependencies=[Depends(require_auth)])
+def autonomy_status() -> Dict[str, Any]:
+    return {"ok": True, "reply": "Autonomy status loaded.", "autonomy": autonomy_engine.status()}
+
+
+@app.post("/autonomy/start", dependencies=[Depends(require_auth)])
+def autonomy_start() -> Dict[str, Any]:
+    result = autonomy_engine.start(alpaca)
+    append_event(settings.data_dir, "autonomy_start", result)
+    return {"ok": True, "reply": "Autonomy started.", **result}
+
+
+@app.post("/autonomy/stop", dependencies=[Depends(require_auth)])
+def autonomy_stop() -> Dict[str, Any]:
+    result = autonomy_engine.stop()
+    append_event(settings.data_dir, "autonomy_stop", result)
+    return {"ok": True, "reply": "Autonomy stopped.", **result}
+
+
+@app.post("/autonomy/cycle", dependencies=[Depends(require_auth)])
+def autonomy_cycle() -> Dict[str, Any]:
+    client = alpaca()
+    result = api_result(lambda: autonomy_engine.run_cycle(client))
+    return {"ok": True, "reply": result["summary"], "autonomy": result}
 
 
 @app.post("/upload", dependencies=[Depends(require_auth)])
@@ -765,6 +818,16 @@ def query(req: QueryRequest) -> Dict[str, Any]:
         result = {"ok": True, "reply": summarize_state(raw_state), "state": raw_state}
     elif action == "metrics":
         result = metrics()
+    elif action == "screen":
+        result = screen()
+    elif action == "autonomy_start":
+        result = autonomy_start()
+    elif action == "autonomy_stop":
+        result = autonomy_stop()
+    elif action == "autonomy_status":
+        result = autonomy_status()
+    elif action == "autonomy_cycle":
+        result = autonomy_cycle()
     elif action == "cancel_all_orders":
         result = cancel_all()
     elif action == "close_all_positions":
