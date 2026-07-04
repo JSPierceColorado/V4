@@ -1,154 +1,107 @@
-from typing import Any, Dict, Optional
+import csv
+import io
+from pathlib import Path
+from typing import Any, Dict, List
 
-import requests
+from storage import extract_symbols, pick_score_column, pick_symbol_column
 
 
-class AlpacaError(RuntimeError):
-    pass
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", "").replace("%", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
-class AlpacaRest:
-    def __init__(
-        self,
-        api_key: str,
-        secret_key: str,
-        trading_base_url: str,
-        data_base_url: str,
-        data_feed: str,
-        timeout: float = 15.0,
-    ) -> None:
-        self.api_key = api_key
-        self.secret_key = secret_key
-        self.trading_base_url = trading_base_url.rstrip("/")
-        self.data_base_url = data_base_url.rstrip("/")
-        self.data_feed = data_feed
-        self.timeout = timeout
+def parse_csv_bytes(raw: bytes) -> Dict[str, Any]:
+    text = raw.decode("utf-8-sig", errors="replace")
+    sample = text[:4096]
+    try:
+        dialect = csv.Sniffer().sniff(sample) if sample.strip() else csv.excel
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    rows: List[Dict[str, str]] = [dict(row) for row in reader if row]
+    headers = reader.fieldnames or []
+    symbol_col = pick_symbol_column(headers)
+    score_col = pick_score_column(headers)
 
-    @property
-    def headers(self) -> Dict[str, str]:
-        return {
-            "APCA-API-KEY-ID": self.api_key,
-            "APCA-API-SECRET-KEY": self.secret_key,
-            "Content-Type": "application/json",
-        }
-
-    def _request(
-        self,
-        method: str,
-        base_url: str,
-        path: str,
-        *,
-        params: Optional[Dict[str, Any]] = None,
-        json_body: Optional[Dict[str, Any]] = None,
-    ) -> Any:
-        if not self.api_key or not self.secret_key:
-            raise AlpacaError("Missing Alpaca API credentials")
-        url = f"{base_url}{path}"
-        response = requests.request(
-            method,
-            url,
-            headers=self.headers,
-            params=params,
-            json=json_body,
-            timeout=self.timeout,
-        )
-        if response.status_code >= 400:
-            raise AlpacaError(
-                f"{method} {path} failed status={response.status_code} body={response.text[:800]}"
+    candidates = []
+    if symbol_col:
+        for row in rows:
+            symbol = str(row.get(symbol_col, "")).strip().upper()
+            if not symbol:
+                continue
+            candidates.append(
+                {
+                    "symbol": symbol,
+                    "score": _to_float(row.get(score_col)) if score_col else None,
+                    "row": row,
+                }
             )
-        if response.status_code == 204 or not response.text.strip():
-            return {"ok": True}
-        return response.json()
+    else:
+        for symbol in extract_symbols(text):
+            candidates.append({"symbol": symbol, "score": None, "row": {}})
 
-    def trading(self, method: str, path: str, **kwargs: Any) -> Any:
-        return self._request(method, self.trading_base_url, path, **kwargs)
-
-    def data(self, method: str, path: str, **kwargs: Any) -> Any:
-        return self._request(method, self.data_base_url, path, **kwargs)
-
-    def account(self) -> Dict[str, Any]:
-        return self.trading("GET", "/v2/account")
-
-    def positions(self) -> Any:
-        return self.trading("GET", "/v2/positions")
-
-    def open_orders(self) -> Any:
-        return self.trading("GET", "/v2/orders", params={"status": "open", "limit": 500})
-
-    def state(self) -> Dict[str, Any]:
-        return {
-            "account": self.account(),
-            "positions": self.positions(),
-            "open_orders": self.open_orders(),
-        }
-
-    def portfolio_history(
-        self,
-        period: str = "1M",
-        timeframe: str = "1D",
-        intraday_reporting: str = "market_hours",
-    ) -> Dict[str, Any]:
-        return self.trading(
-            "GET",
-            "/v2/account/portfolio/history",
-            params={
-                "period": period,
-                "timeframe": timeframe,
-                "intraday_reporting": intraday_reporting,
-            },
+    if score_col:
+        candidates.sort(
+            key=lambda item: item["score"] if item["score"] is not None else float("-inf"),
+            reverse=True,
         )
 
-    def latest_quote(self, symbol: str) -> Dict[str, Any]:
-        return self.data(
-            "GET",
-            f"/v2/stocks/{symbol.upper()}/quotes/latest",
-            params={"feed": self.data_feed},
-        )
+    return {
+        "kind": "csv",
+        "headers": headers,
+        "row_count": len(rows),
+        "symbol_column": symbol_col,
+        "score_column": score_col,
+        "symbols": [item["symbol"] for item in candidates[:100]],
+        "top_candidates": candidates[:25],
+        "text_preview": text[:2000],
+    }
 
-    def latest_trade(self, symbol: str) -> Dict[str, Any]:
-        return self.data(
-            "GET",
-            f"/v2/stocks/{symbol.upper()}/trades/latest",
-            params={"feed": self.data_feed},
-        )
 
-    def place_order(
-        self,
-        *,
-        symbol: str,
-        side: str,
-        qty: Optional[float] = None,
-        notional: Optional[float] = None,
-        order_type: str = "market",
-        time_in_force: str = "day",
-        limit_price: Optional[float] = None,
-        stop_price: Optional[float] = None,
-        extended_hours: bool = False,
-    ) -> Dict[str, Any]:
-        body: Dict[str, Any] = {
-            "symbol": symbol.upper(),
-            "side": side.lower(),
-            "type": order_type.lower(),
-            "time_in_force": time_in_force.lower(),
-        }
-        if qty is not None:
-            body["qty"] = str(qty)
-        if notional is not None:
-            body["notional"] = str(notional)
-        if limit_price is not None:
-            body["limit_price"] = str(limit_price)
-        if stop_price is not None:
-            body["stop_price"] = str(stop_price)
-        if extended_hours:
-            body["extended_hours"] = True
-        return self.trading("POST", "/v2/orders", json_body=body)
+def parse_pdf_bytes(raw: bytes) -> Dict[str, Any]:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise RuntimeError("PDF support requires pypdf") from exc
 
-    def cancel_all_orders(self) -> Any:
-        return self.trading("DELETE", "/v2/orders")
+    reader = PdfReader(io.BytesIO(raw))
+    page_texts = []
+    for page in reader.pages[:25]:
+        page_texts.append(page.extract_text() or "")
+    text = "\n".join(page_texts)
+    symbols = extract_symbols(text)
+    return {
+        "kind": "pdf",
+        "page_count": len(reader.pages),
+        "symbols": symbols[:100],
+        "top_candidates": [
+            {"symbol": symbol, "score": None, "row": {}} for symbol in symbols[:25]
+        ],
+        "text_preview": text[:3000],
+    }
 
-    def close_all_positions(self, cancel_orders: bool = True) -> Any:
-        return self.trading(
-            "DELETE",
-            "/v2/positions",
-            params={"cancel_orders": str(cancel_orders).lower()},
-        )
+
+def parse_upload(filename: str, raw: bytes, content_type: str = "") -> Dict[str, Any]:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".csv" or "csv" in content_type:
+        return parse_csv_bytes(raw)
+    if suffix == ".pdf" or "pdf" in content_type:
+        return parse_pdf_bytes(raw)
+    text = raw.decode("utf-8", errors="replace")
+    symbols = extract_symbols(text)
+    return {
+        "kind": "text",
+        "symbols": symbols[:100],
+        "top_candidates": [
+            {"symbol": symbol, "score": None, "row": {}} for symbol in symbols[:25]
+        ],
+        "text_preview": text[:3000],
+    }

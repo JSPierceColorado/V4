@@ -1,5 +1,5 @@
-from agent import friendly_openai_error, rule_parse
 from config import normalize_openai_model
+from v4_brain import friendly_openai_error, rule_parse
 
 
 def test_rule_parse_limit_buy() -> None:
