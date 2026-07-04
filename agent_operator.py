@@ -212,6 +212,80 @@ def model_plan(settings: Settings, context: Dict[str, Any]) -> Dict[str, Any]:
         return plan
 
 
+def _format_pct(value: Any) -> str:
+    try:
+        return f"{float(value):+.2%}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def summarize_tool_result(result: Dict[str, Any]) -> str:
+    tool = result.get("tool") or "tool"
+    if result.get("ok") is False:
+        return f"{tool}: failed - {result.get('error') or result.get('reply') or 'unknown error'}"
+
+    if result.get("skipped"):
+        reason = result.get("reason") or result.get("skipped")
+        if reason == "not_due":
+            last_at = result.get("last_periodic_research_at") or "unknown"
+            return f"{tool}: skipped - not due yet. Last periodic research: {last_at}."
+        return f"{tool}: skipped - {reason}."
+
+    if result.get("rate_limited"):
+        return f"{tool}: paused - Alpaca rate limit. {result.get('warning') or ''}".strip()
+
+    if tool == "clock":
+        clock = result.get("clock") or {}
+        if clock.get("is_open") is True:
+            return f"clock: market open. Next close: {clock.get('next_close', 'unknown')}."
+        return f"clock: market closed. Next open: {clock.get('next_open', 'unknown')}."
+
+    if tool == "research":
+        research = result.get("research") or {}
+        best = research.get("best") or {}
+        validation = best.get("validation") or {}
+        strategy_id = research.get("best_strategy_id")
+        if strategy_id:
+            return (
+                f"research: tested {research.get('variants_tested', 0)} variants "
+                f"on {research.get('bars_symbols', 0)} symbols. "
+                f"Deployed {strategy_id}. "
+                f"Validation return {_format_pct(validation.get('total_return_pct'))}, "
+                f"win rate {_format_pct(validation.get('win_rate'))}, "
+                f"trades {validation.get('trades', 0)}."
+            )
+        return f"research: {result.get('reply') or 'completed'}"
+
+    if tool == "autonomy_cycle":
+        autonomy = result.get("autonomy") or result
+        return f"autonomy_cycle: {autonomy.get('summary') or result.get('reply') or 'completed'}"
+
+    if tool == "screen":
+        candidates = result.get("candidates") or (result.get("screen") or {}).get("candidates") or []
+        top = candidates[0].get("symbol") if candidates else "none"
+        return (
+            f"screen: checked {result.get('symbols_checked', 0)} symbols, "
+            f"found {len(candidates)} candidates. Top: {top}."
+        )
+
+    if tool == "metrics":
+        metrics = result.get("metrics") or {}
+        return f"metrics: {metrics.get('summary') or result.get('reply') or 'loaded'}"
+
+    if tool == "state":
+        state = result.get("state") or {}
+        account = state.get("account") or {}
+        positions = state.get("positions") or []
+        orders = state.get("open_orders") or []
+        return (
+            f"state: equity ${account.get('equity', 'unknown')}, "
+            f"buying power ${account.get('buying_power', 'unknown')}, "
+            f"positions {len(positions)}, open orders {len(orders)}."
+        )
+
+    return f"{tool}: {result.get('reply') or result.get('summary') or result.get('status') or 'completed'}"
+
+
 def journal_operator_cycle(
     data_dir: str,
     *,
@@ -223,12 +297,7 @@ def journal_operator_cycle(
     if rationale:
         lines.append(f"Rationale: {rationale}")
     for index, result in enumerate(results, start=1):
-        tool = result.get("tool")
-        if result.get("ok") is False:
-            lines.append(f"{index}. {tool}: failed - {result.get('error') or result.get('reply')}")
-        else:
-            reply = result.get("reply") or result.get("summary") or result.get("status") or "completed"
-            lines.append(f"{index}. {tool}: {reply}")
+        lines.append(f"{index}. {summarize_tool_result(result)}")
     journal = {
         "ok": True,
         "created_at": utc_now(),

@@ -3,6 +3,7 @@ from agent_operator import (
     fallback_plan,
     journal_operator_cycle,
     model_plan,
+    summarize_tool_result,
 )
 from config import load_settings
 from storage import load_events
@@ -68,3 +69,62 @@ def test_operator_journal_writes_recent_event(tmp_path) -> None:
     assert journal["ok"] is True
     assert "Check account" in journal["summary"]
     assert events[-1]["type"] == "agent_operator_journal"
+
+
+def test_operator_summary_shows_research_skipped_not_due(tmp_path) -> None:
+    journal = journal_operator_cycle(
+        str(tmp_path),
+        plan={
+            "source": "openai",
+            "rationale": "Market is closed; research if useful and check clock.",
+            "actions": [],
+        },
+        results=[
+            {
+                "tool": "research",
+                "reason": "not_due",
+                "ok": True,
+                "skipped": True,
+                "last_periodic_research_at": "2026-07-04T17:47:37+00:00",
+            },
+            {
+                "tool": "clock",
+                "ok": True,
+                "reply": "Clock loaded.",
+                "clock": {
+                    "is_open": False,
+                    "next_open": "2026-07-06T09:30:00-04:00",
+                    "next_close": "2026-07-06T16:00:00-04:00",
+                },
+            },
+        ],
+    )
+
+    assert "research: skipped - not due yet" in journal["summary"]
+    assert "Last periodic research: 2026-07-04T17:47:37+00:00" in journal["summary"]
+    assert "clock: market closed. Next open: 2026-07-06T09:30:00-04:00" in journal["summary"]
+
+
+def test_operator_summary_shows_research_backtest_result() -> None:
+    summary = summarize_tool_result(
+        {
+            "tool": "research",
+            "ok": True,
+            "research": {
+                "variants_tested": 48,
+                "bars_symbols": 25,
+                "best_strategy_id": "research_tp40_sl25_ms55_mh20_sb0",
+                "best": {
+                    "validation": {
+                        "total_return_pct": 0.032,
+                        "win_rate": 0.58,
+                        "trades": 14,
+                    }
+                },
+            },
+        }
+    )
+
+    assert "tested 48 variants on 25 symbols" in summary
+    assert "Validation return +3.20%" in summary
+    assert "win rate +58.00%" in summary
