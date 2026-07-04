@@ -32,53 +32,58 @@ class AutonomyEngine:
 
     def status(self) -> Dict[str, Any]:
         with self._lock:
-            return {
-                "running": self.snapshot.running,
-                "dry_run": self.settings.autonomy_dry_run,
-                "interval_seconds": self.settings.autonomy_interval_seconds,
-                "symbols": (
-                    list(self.settings.autonomy_symbols)
-                    if self.settings.autonomy_symbols
-                    else "ALL_ACTIVE_TRADABLE_US_EQUITIES"
-                ),
-                "min_score": self.settings.autonomy_min_score,
-                "max_orders_per_cycle": (
-                    self.settings.autonomy_max_orders_per_cycle
-                    if self.settings.autonomy_max_orders_per_cycle > 0
-                    else "unlimited"
-                ),
-                "max_positions": (
-                    self.settings.autonomy_max_positions
-                    if self.settings.autonomy_max_positions > 0
-                    else "unlimited"
-                ),
-                "last_started_at": self.snapshot.last_started_at,
-                "last_finished_at": self.snapshot.last_finished_at,
-                "last_error": self.snapshot.last_error,
-                "last_result": self.snapshot.last_result,
-                "cycles": self.snapshot.cycles,
-            }
+            return self._status_unlocked()
 
     def start(self, alpaca_factory) -> Dict[str, Any]:
+        thread_to_start: Optional[threading.Thread] = None
         with self._lock:
             if self._thread and self._thread.is_alive():
-                return {"ok": True, "status": self.status()}
+                return {"ok": True, "status": self._status_unlocked()}
             self._stop.clear()
             self.snapshot.running = True
-            self._thread = threading.Thread(
+            thread_to_start = threading.Thread(
                 target=self._loop,
                 args=(alpaca_factory,),
                 name="v4-autonomy",
                 daemon=True,
             )
-            self._thread.start()
-            return {"ok": True, "status": self.status()}
+            self._thread = thread_to_start
+        thread_to_start.start()
+        return {"ok": True, "status": self.status()}
 
     def stop(self) -> Dict[str, Any]:
         self._stop.set()
         with self._lock:
             self.snapshot.running = False
         return {"ok": True, "status": self.status()}
+
+    def _status_unlocked(self) -> Dict[str, Any]:
+        return {
+            "running": self.snapshot.running,
+            "dry_run": self.settings.autonomy_dry_run,
+            "interval_seconds": self.settings.autonomy_interval_seconds,
+            "symbols": (
+                list(self.settings.autonomy_symbols)
+                if self.settings.autonomy_symbols
+                else "ALL_ACTIVE_TRADABLE_US_EQUITIES"
+            ),
+            "min_score": self.settings.autonomy_min_score,
+            "max_orders_per_cycle": (
+                self.settings.autonomy_max_orders_per_cycle
+                if self.settings.autonomy_max_orders_per_cycle > 0
+                else "unlimited"
+            ),
+            "max_positions": (
+                self.settings.autonomy_max_positions
+                if self.settings.autonomy_max_positions > 0
+                else "unlimited"
+            ),
+            "last_started_at": self.snapshot.last_started_at,
+            "last_finished_at": self.snapshot.last_finished_at,
+            "last_error": self.snapshot.last_error,
+            "last_result": self.snapshot.last_result,
+            "cycles": self.snapshot.cycles,
+        }
 
     def _loop(self, alpaca_factory) -> None:
         while not self._stop.is_set():

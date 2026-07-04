@@ -1,3 +1,6 @@
+import threading
+
+from autonomy import AutonomyEngine
 from config import load_settings
 from screener import screen_symbols
 
@@ -47,3 +50,22 @@ def test_blank_symbol_universe_uses_active_tradable_assets() -> None:
     assert alpaca.used_assets is True
     assert result["symbols_checked"] == 2
     assert len(result["candidates"]) == 2
+
+
+def test_autonomy_start_returns_status_without_deadlock(monkeypatch) -> None:
+    settings = load_settings()
+    engine = AutonomyEngine(settings)
+    monkeypatch.setattr(engine, "_loop", lambda alpaca_factory: None)
+
+    result = {}
+
+    def start_engine() -> None:
+        result.update(engine.start(lambda: object()))
+
+    thread = threading.Thread(target=start_engine, daemon=True)
+    thread.start()
+    thread.join(timeout=1)
+
+    assert not thread.is_alive()
+    assert result["ok"] is True
+    assert result["status"]["running"] is True
