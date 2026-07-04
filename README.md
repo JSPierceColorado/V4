@@ -82,10 +82,12 @@ Remove `dry_run=true` to place the paper order.
 Use a full model id:
 
 ```env
-OPENAI_MODEL=gpt-5.5
+OPENAI_MODEL=gpt-5.4
 ```
 
 The app also accepts short aliases like `5.5`, `5.4`, `5.2`, `5.1`, `mini`, and `nano`.
+
+`gpt-5.4` is the default because v4 uses the model mostly for strategy generation and triage, while the backtester remains the final judge. Use `gpt-5.5` when you want to spend more on frontier reasoning experiments and compare research outcomes.
 
 ## Metrics
 
@@ -161,6 +163,8 @@ The research layer generates strategy variants, backtests them on historical dai
 By default, each research job selects 250 rotating symbols from the tradable universe, looks back 1095 calendar days when Alpaca has that history, and generates 1000 variants. To keep the lab practical on Railway, v4 can use AI triage to choose a smaller scout set, scouts that set on 60 symbols, then validates the top 50 finalists across the full train/test split. The current strategy grammar includes momentum, breakout, volume momentum, trend pullback, dip buy, mean reversion, oversold reclaim, and volatility runner families. This gives the operator a richer search space while staying inside one Railway program and Alpaca's data limits.
 
 When `AUTONOMY_AI_VARIANT_TRIAGE_ENABLED=true`, v4 uses OpenAI to preselect the most promising and diverse strategy IDs before CPU scouting. The default target is 500 scouted variants from the 1000-variant generated pool, which makes the research split roughly half AI judgment and half Railway backtesting while keeping validation as the final judge.
+
+If AI triage returns too few usable IDs or the model call fails, v4 falls back to a deterministic diverse downselect to the same target instead of scouting the full generated pool.
 
 Research records the best candidate every run, but with `AUTONOMY_RESEARCH_REQUIRE_PROFITABLE=true` it only promotes a strategy into the active paper-trading slot if validation return is positive and it produced enough trades. Losing candidates stay as research evidence instead of becoming the active strategy.
 

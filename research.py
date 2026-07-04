@@ -577,6 +577,25 @@ def _compact_strategy(strategy: Dict[str, Any]) -> Dict[str, Any]:
     return compact
 
 
+def _deterministic_triage(variants: List[Dict[str, Any]], target: int) -> List[Dict[str, Any]]:
+    if len(variants) <= target:
+        return variants
+    buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for strategy in variants:
+        key = f"{strategy.get('source', 'unknown')}:{strategy.get('family', 'unknown')}"
+        buckets.setdefault(key, []).append(strategy)
+    selected: List[Dict[str, Any]] = []
+    keys = sorted(buckets)
+    while len(selected) < target and any(buckets.values()):
+        for key in keys:
+            if not buckets[key]:
+                continue
+            selected.append(buckets[key].pop(0))
+            if len(selected) >= target:
+                break
+    return selected
+
+
 def ai_triage_variants(
     settings: Settings,
     seed_state: Dict[str, Any],
@@ -600,12 +619,13 @@ def ai_triage_variants(
     try:
         from openai import OpenAI
     except ImportError:
-        return variants, {
+        selected = _deterministic_triage(variants, target)
+        return selected, {
             "enabled": True,
             "used": False,
-            "reason": "openai_package_missing",
+            "reason": "openai_package_missing_deterministic_fallback",
             "input_variants": len(variants),
-            "selected_variants": len(variants),
+            "selected_variants": len(selected),
             "target": target,
         }
 
@@ -641,13 +661,14 @@ def ai_triage_variants(
         )
         parsed = _json_from_text(getattr(response, "output_text", "") or "")
     except Exception as exc:
-        return variants, {
+        selected = _deterministic_triage(variants, target)
+        return selected, {
             "enabled": True,
             "used": False,
-            "reason": "openai_error",
+            "reason": "openai_error_deterministic_fallback",
             "error": str(exc),
             "input_variants": len(variants),
-            "selected_variants": len(variants),
+            "selected_variants": len(selected),
             "target": target,
         }
 
@@ -662,12 +683,13 @@ def ai_triage_variants(
     selected = [by_id[variant_id] for variant_id in selected_ids if variant_id in by_id]
     minimum_valid = min(len(variants), max(3, min(target, len(variants)) // 3))
     if len(selected) < minimum_valid:
-        return variants, {
+        fallback = _deterministic_triage(variants, target)
+        return fallback, {
             "enabled": True,
             "used": False,
-            "reason": "too_few_valid_ids",
+            "reason": "too_few_valid_ids_deterministic_fallback",
             "input_variants": len(variants),
-            "selected_variants": len(variants),
+            "selected_variants": len(fallback),
             "target": target,
             "valid_ids_returned": len(selected),
         }
