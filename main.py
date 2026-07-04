@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -29,6 +30,79 @@ from v4_brain import llm_parse, llm_reply, rule_parse
 settings = load_settings()
 app = FastAPI(title="v4 Agentic Trader", version="0.1.0")
 autonomy_engine = AutonomyEngine(settings)
+
+
+class ResearchJobManager:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._status: Dict[str, Any] = {
+            "running": False,
+            "job_id": None,
+            "started_at": None,
+            "finished_at": None,
+            "result": None,
+            "error": None,
+        }
+
+    def status(self) -> Dict[str, Any]:
+        with self._lock:
+            return dict(self._status)
+
+    def start(self) -> Dict[str, Any]:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return {"started": False, "status": dict(self._status)}
+            job_id = utc_now()
+            self._status = {
+                "running": True,
+                "job_id": job_id,
+                "started_at": job_id,
+                "finished_at": None,
+                "result": None,
+                "error": None,
+            }
+            thread = threading.Thread(
+                target=self._run,
+                name="v4-research",
+                daemon=True,
+            )
+            self._thread = thread
+        thread.start()
+        append_event(
+            settings.data_dir,
+            "research_started",
+            {
+                "job_id": job_id,
+                "reply": "Research started in the background.",
+                "symbols_per_run": settings.autonomy_research_symbols_per_run,
+                "max_variants": settings.autonomy_research_max_variants,
+                "ai_strategy_ideas": settings.autonomy_ai_strategy_ideas,
+            },
+        )
+        return {"started": True, "status": self.status()}
+
+    def _run(self) -> None:
+        try:
+            client = alpaca()
+            result = run_research(settings, client)
+            append_event(settings.data_dir, "research", result)
+            with self._lock:
+                self._status["running"] = False
+                self._status["finished_at"] = utc_now()
+                self._status["result"] = result
+                self._status["error"] = None
+        except Exception as exc:
+            error = str(getattr(exc, "detail", exc))
+            append_event(settings.data_dir, "research_error", {"error": error})
+            with self._lock:
+                self._status["running"] = False
+                self._status["finished_at"] = utc_now()
+                self._status["result"] = None
+                self._status["error"] = error
+
+
+research_jobs = ResearchJobManager()
 
 
 CHAT_HTML = """
@@ -662,6 +736,15 @@ def summarize_event(event: Dict[str, Any]) -> str:
             f"win rate: {validation.get('win_rate', 'n/a')}, "
             f"trades: {validation.get('trades', 'n/a')}."
         )
+    if event_type == "research_started":
+        return (
+            f"{ts} - research started\n"
+            f"{payload.get('symbols_per_run', 'n/a')} symbols per run, "
+            f"{payload.get('max_variants', 'n/a')} max variants, "
+            f"{payload.get('ai_strategy_ideas', 'n/a')} AI ideas."
+        )
+    if event_type == "research_error":
+        return f"{ts} - research error\n{payload.get('error', 'Unknown error')}"
     if event_type == "autonomy_cycle":
         return f"{ts} - autonomy cycle\n{payload.get('summary', 'No summary.')}"
     if event_type == "autonomy_error":
@@ -815,10 +898,40 @@ def agent_cycle() -> Dict[str, Any]:
 
 @app.post("/research", dependencies=[Depends(require_auth)])
 def research() -> Dict[str, Any]:
-    client = alpaca()
-    result = api_result(lambda: run_research(settings, client))
-    append_event(settings.data_dir, "research", result)
-    return result
+    job = research_jobs.start()
+    status = job["status"]
+    if job["started"]:
+        reply = (
+            "Research started in the background. "
+            f"Testing up to {settings.autonomy_research_max_variants} variants "
+            f"on {settings.autonomy_research_symbols_per_run} selected symbols, "
+            f"including up to {settings.autonomy_ai_strategy_ideas} AI lab ideas. "
+            "Ask `research status` for progress."
+        )
+    else:
+        reply = (
+            "Research is already running. "
+            f"Started at {status.get('started_at')}. Ask `research status` for progress."
+        )
+    return {"ok": True, "reply": reply, "research_job": status}
+
+
+@app.get("/research/status", dependencies=[Depends(require_auth)])
+def research_status() -> Dict[str, Any]:
+    status = research_jobs.status()
+    if status.get("running"):
+        reply = (
+            "Research is still running. "
+            f"Started at {status.get('started_at')}. "
+            "This can take several minutes on Railway when the lab is cranked up."
+        )
+    elif status.get("error"):
+        reply = f"Research failed: {status.get('error')}"
+    elif status.get("result"):
+        reply = status["result"].get("reply") or "Research completed."
+    else:
+        reply = "No background research job has run since this process started."
+    return {"ok": True, "reply": reply, "research_job": status}
 
 
 @app.post("/upload", dependencies=[Depends(require_auth)])
@@ -940,6 +1053,8 @@ def query(req: QueryRequest) -> Dict[str, Any]:
         result = agent_cycle()
     elif action == "research":
         result = research()
+    elif action == "research_status":
+        result = research_status()
     elif action == "cancel_all_orders":
         result = cancel_all()
     elif action == "close_all_positions":

@@ -80,6 +80,10 @@ def rule_parse(message: str) -> Dict[str, Any]:
         )
     ):
         return {"action": "events", "args": {}}
+    if "research" in lowered and any(
+        word in lowered for word in ("status", "progress", "done", "finished", "running")
+    ):
+        return {"action": "research_status", "args": {}}
     if any(word in lowered for word in ("research", "backtest", "backtesting")) or (
         "strategy" in lowered and any(phrase in lowered for phrase in ("deploy best", "find best", "test variants"))
     ):
@@ -137,7 +141,7 @@ def llm_parse(settings: Settings, message: str, context: Dict[str, Any]) -> Dict
         "You are v4, a concise paper-trading assistant and command parser. "
         "Return only JSON with keys action and args. "
         "Allowed actions: state, clock, events, metrics, screen, autonomy_start, autonomy_stop, "
-        "autonomy_status, autonomy_cycle, agent_cycle, research, analyze, run, place_order, "
+        "autonomy_status, autonomy_cycle, agent_cycle, research, research_status, analyze, run, place_order, "
         "cancel_all_orders, close_all_positions, reply. "
         "Only choose place_order when the user clearly asks to place a paper order. "
         "For place_order args include symbol, side, qty, notional, order_type, "

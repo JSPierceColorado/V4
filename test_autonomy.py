@@ -42,6 +42,11 @@ def test_rule_parse_research() -> None:
     assert parsed["action"] == "research"
 
 
+def test_rule_parse_research_status() -> None:
+    parsed = rule_parse("research status")
+    assert parsed["action"] == "research_status"
+
+
 def test_rule_parse_market_clock() -> None:
     parsed = rule_parse("is the market open?")
     assert parsed["action"] == "clock"

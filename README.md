@@ -9,10 +9,12 @@ One FastAPI service for Railway. It accepts CSV/PDF/text inputs, understands nat
 - `GET /uploads`
 - `GET /metrics`
 - `GET /screen`
+- `GET /research/status`
 - `GET /autonomy/status`
 - `POST /autonomy/start`
 - `POST /autonomy/stop`
 - `POST /autonomy/cycle`
+- `POST /research`
 - `POST /upload`
 - `POST /query`
 - `POST /run`
@@ -138,6 +140,7 @@ start autonomy
 stop autonomy
 autonomy status
 research strategies
+research status
 run operator cycle
 show recent actions
 ```
@@ -154,10 +157,13 @@ The guiding v4 doctrine is built into the operator: observe the regime, form a t
 
 Research also runs automatically inside the background autonomy engine. By default, v4 checks before each 10-minute trading cycle and runs research when at least 6 hours have passed since the last periodic research job.
 
+Manual research requests start a background job and return immediately, which prevents Railway or the browser from timing out during a large backtest. Ask `research status` to see whether the job is still running, failed, or completed with a promoted strategy.
+
 Ask in chat:
 
 ```text
 research strategies
 backtest strategies
 deploy best strategy
+research status
 ```

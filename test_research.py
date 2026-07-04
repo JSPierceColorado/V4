@@ -15,6 +15,18 @@ def test_chat_ui_loads() -> None:
     assert "Attach CSV or PDF" in response.text
 
 
+def test_research_status_endpoint_returns_idle_state() -> None:
+    client = TestClient(app)
+    response = client.get(
+        "/research/status",
+        headers={"X-Admin-Token": "test-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert "research" in response.json()["reply"].lower()
+
+
 def test_summarize_events_surfaces_operator_details() -> None:
     summary = summarize_events(
         [
