@@ -679,7 +679,11 @@ def metrics() -> Dict[str, Any]:
 def screen() -> Dict[str, Any]:
     client = alpaca()
     result = api_result(
-        lambda: screen_symbols(client, settings.autonomy_symbols or None)
+        lambda: screen_symbols(
+            client,
+            settings.autonomy_symbols or None,
+            max_symbols_per_cycle=settings.autonomy_screen_symbols_per_cycle,
+        )
     )
     append_event(settings.data_dir, "screen", {"summary": result})
     return {

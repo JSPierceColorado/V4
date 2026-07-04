@@ -103,7 +103,7 @@ The metrics view includes compact KPI tiles plus charts for equity trend, drawdo
 
 ## Autonomy
 
-The autonomous loop screens symbols, manages exits, evolves the active strategy, and places paper orders. Blank `AUTONOMY_SYMBOLS` means all active tradable US equities. Zero caps mean unlimited. New entries default to 2% of Alpaca `buying_power`, which includes margin buying power.
+The autonomous loop screens symbols, manages exits, evolves the active strategy, and places paper orders. Blank `AUTONOMY_SYMBOLS` means all active tradable US equities. To avoid Alpaca rate limits, v4 rotates through the full universe in batches each cycle. Zero order/position caps mean unlimited. New entries default to 2% of Alpaca `buying_power`, which includes margin buying power.
 
 ```env
 AUTONOMY_ENABLED=true
@@ -114,6 +114,7 @@ AUTONOMY_MIN_SCORE=0
 AUTONOMY_MAX_ORDERS_PER_CYCLE=0
 AUTONOMY_MAX_POSITIONS=0
 AUTONOMY_POSITION_BUYING_POWER_PCT=0.02
+AUTONOMY_SCREEN_SYMBOLS_PER_CYCLE=100
 ```
 
 The strategy layer starts with balanced, fast, and runner variants. Positions are tagged to the strategy that opened them. Exits update each strategy's win rate, average P/L, and fitness, then the loop promotes the best performer.

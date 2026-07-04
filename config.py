@@ -81,6 +81,7 @@ class Settings:
     autonomy_max_orders_per_cycle: int
     autonomy_max_positions: int
     autonomy_position_buying_power_pct: float
+    autonomy_screen_symbols_per_cycle: int
 
     @property
     def alpaca_ready(self) -> bool:
@@ -138,5 +139,8 @@ def load_settings() -> Settings:
         autonomy_max_positions=env_int("AUTONOMY_MAX_POSITIONS", 0),
         autonomy_position_buying_power_pct=env_float(
             "AUTONOMY_POSITION_BUYING_POWER_PCT", 0.02
+        ),
+        autonomy_screen_symbols_per_cycle=env_int(
+            "AUTONOMY_SCREEN_SYMBOLS_PER_CYCLE", 100
         ),
     )

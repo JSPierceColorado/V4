@@ -98,6 +98,7 @@ class AutonomyEngine:
                 else "unlimited"
             ),
             "position_buying_power_pct": self.settings.autonomy_position_buying_power_pct,
+            "screen_symbols_per_cycle": self.settings.autonomy_screen_symbols_per_cycle,
             "last_started_at": self.snapshot.last_started_at,
             "last_finished_at": self.snapshot.last_finished_at,
             "last_error": self.snapshot.last_error,
@@ -125,8 +126,6 @@ class AutonomyEngine:
             self.snapshot.last_started_at = started
             self.snapshot.last_error = None
 
-        symbols = self.settings.autonomy_symbols or None
-        screen = screen_symbols(alpaca, symbols)
         state = alpaca.state()
         account = state.get("account") or {}
         positions = state.get("positions") or []
@@ -205,6 +204,18 @@ class AutonomyEngine:
             actions.append(action)
 
         strategy = evolve(evolution_state)
+        symbols = self.settings.autonomy_symbols or None
+        screen = screen_symbols(
+            alpaca,
+            symbols,
+            max_symbols_per_cycle=self.settings.autonomy_screen_symbols_per_cycle,
+            offset=int(evolution_state.get("screen_offset") or 0),
+        )
+        evolution_state["screen_offset"] = screen.get(
+            "next_screen_offset",
+            evolution_state.get("screen_offset", 0),
+        )
+        evolution_state["screen_universe_symbols"] = screen.get("universe_symbols", 0)
         candidates = sorted(
             screen.get("candidates", []),
             key=lambda candidate: adjusted_score(candidate, strategy),

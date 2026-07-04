@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Any, Dict, Iterable, List
 
-from alpaca_rest import AlpacaRest
+from alpaca_rest import AlpacaError, AlpacaRest
 
 
 def _float(value: Any, default: float = 0.0) -> float:
@@ -51,6 +51,8 @@ def screen_symbols(
     min_price: float = 2.0,
     min_dollar_vol_m: float = 1.0,
     max_results: int = 0,
+    max_symbols_per_cycle: int = 0,
+    offset: int = 0,
 ) -> Dict[str, Any]:
     if symbols is None:
         symbols = alpaca.active_tradable_us_equity_symbols()
@@ -63,11 +65,30 @@ def screen_symbols(
             seen.add(token)
             unique.append(token)
 
+    universe_symbols = len(unique)
+    normalized_offset = offset % universe_symbols if universe_symbols else 0
+    if max_symbols_per_cycle > 0 and universe_symbols > max_symbols_per_cycle:
+        rotated = unique[normalized_offset:] + unique[:normalized_offset]
+        unique = rotated[:max_symbols_per_cycle]
+        next_offset = (normalized_offset + len(unique)) % universe_symbols
+    else:
+        next_offset = 0
+
     start = (datetime.now(timezone.utc) - timedelta(days=390)).date().isoformat()
     candidates: List[Dict[str, Any]] = []
     rejected = 0
+    warnings: List[str] = []
+    rate_limited = False
     for chunk in _chunks(unique, 50):
-        response = alpaca.stock_bars(chunk, start=start)
+        try:
+            response = alpaca.stock_bars(chunk, start=start)
+        except AlpacaError as exc:
+            message = str(exc)
+            if "429" not in message and "too many requests" not in message.lower():
+                raise
+            rate_limited = True
+            warnings.append(message)
+            break
         bars_by_symbol = response.get("bars") or {}
         for symbol, bars in bars_by_symbol.items():
             if not bars:
@@ -106,7 +127,12 @@ def screen_symbols(
     selected = candidates if max_results <= 0 else candidates[:max_results]
     return {
         "ok": True,
+        "universe_symbols": universe_symbols,
         "symbols_checked": len(unique),
+        "screen_offset": normalized_offset,
+        "next_screen_offset": next_offset,
+        "rate_limited": rate_limited,
+        "warnings": warnings,
         "rejected": rejected,
         "candidates": selected,
     }

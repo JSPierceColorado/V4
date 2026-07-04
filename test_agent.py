@@ -17,6 +17,7 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
         "AUTONOMY_MAX_ORDERS_PER_CYCLE",
         "AUTONOMY_MAX_POSITIONS",
         "AUTONOMY_POSITION_BUYING_POWER_PCT",
+        "AUTONOMY_SCREEN_SYMBOLS_PER_CYCLE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -30,6 +31,7 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
     assert settings.autonomy_max_orders_per_cycle == 0
     assert settings.autonomy_max_positions == 0
     assert settings.autonomy_position_buying_power_pct == 0.02
+    assert settings.autonomy_screen_symbols_per_cycle == 100
 
 
 def test_blank_symbol_universe_uses_active_tradable_assets() -> None:
@@ -54,6 +56,47 @@ def test_blank_symbol_universe_uses_active_tradable_assets() -> None:
     assert alpaca.used_assets is True
     assert result["symbols_checked"] == 2
     assert len(result["candidates"]) == 2
+
+
+def test_screener_rotates_large_symbol_universe() -> None:
+    class FakeAlpaca:
+        def __init__(self) -> None:
+            self.requested = []
+
+        def stock_bars(self, symbols, *, start):
+            self.requested.extend(symbols)
+            bars = [
+                {"c": 10 + index * 0.1, "v": 250000}
+                for index in range(30)
+            ]
+            return {"bars": {symbol: list(bars) for symbol in symbols}}
+
+    alpaca = FakeAlpaca()
+    symbols = ["AAA", "BBB", "CCC", "DDD"]
+    result = screen_symbols(
+        alpaca,
+        symbols,
+        max_symbols_per_cycle=2,
+        offset=1,
+    )
+
+    assert alpaca.requested == ["BBB", "CCC"]
+    assert result["universe_symbols"] == 4
+    assert result["symbols_checked"] == 2
+    assert result["screen_offset"] == 1
+    assert result["next_screen_offset"] == 3
+
+
+def test_screener_returns_partial_result_on_rate_limit() -> None:
+    class FakeAlpaca:
+        def stock_bars(self, symbols, *, start):
+            raise AlpacaError('GET /v2/stocks/bars failed status=429 body={"message":"too many requests"}')
+
+    result = screen_symbols(FakeAlpaca(), ["AAA", "BBB"])
+
+    assert result["ok"] is True
+    assert result["rate_limited"] is True
+    assert result["warnings"]
 
 
 def test_autonomy_start_returns_status_without_deadlock(monkeypatch) -> None:
@@ -98,7 +141,7 @@ def test_autonomy_sizes_entry_at_two_percent_of_buying_power(
     monkeypatch.setattr(
         autonomy,
         "screen_symbols",
-        lambda alpaca, symbols: {
+        lambda alpaca, symbols, **kwargs: {
             "ok": True,
             "symbols_checked": 1,
             "rejected": 0,
@@ -145,7 +188,7 @@ def test_autonomy_records_order_errors_without_crashing(monkeypatch, tmp_path) -
     monkeypatch.setattr(
         autonomy,
         "screen_symbols",
-        lambda alpaca, symbols: {
+        lambda alpaca, symbols, **kwargs: {
             "ok": True,
             "symbols_checked": 1,
             "rejected": 0,
@@ -191,7 +234,7 @@ def test_autonomy_sells_position_at_take_profit(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         autonomy,
         "screen_symbols",
-        lambda alpaca, symbols: {
+        lambda alpaca, symbols, **kwargs: {
             "ok": True,
             "symbols_checked": 0,
             "rejected": 0,
