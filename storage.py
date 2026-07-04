@@ -1,129 +1,107 @@
-import json
-import os
-import re
-import time
-import uuid
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+import csv
+import io
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List
+
+from storage import extract_symbols, pick_score_column, pick_symbol_column
 
 
-SYMBOL_RE = re.compile(r"\b[A-Z][A-Z0-9]{0,4}(?:\.[A-Z])?\b")
-COMMON_FALSE_SYMBOLS = {
-    "A",
-    "AI",
-    "API",
-    "CSV",
-    "ETF",
-    "GET",
-    "HTTP",
-    "JSON",
-    "LLM",
-    "PDF",
-    "POST",
-    "SEC",
-    "THE",
-    "USD",
-}
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", "").replace("%", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
-@dataclass(frozen=True)
-class UploadRecord:
-    upload_id: str
-    filename: str
-    content_type: str
-    path: str
-    created_at: str
-    kind: str
-    summary: Dict[str, Any]
+def parse_csv_bytes(raw: bytes) -> Dict[str, Any]:
+    text = raw.decode("utf-8-sig", errors="replace")
+    sample = text[:4096]
+    try:
+        dialect = csv.Sniffer().sniff(sample) if sample.strip() else csv.excel
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    rows: List[Dict[str, str]] = [dict(row) for row in reader if row]
+    headers = reader.fieldnames or []
+    symbol_col = pick_symbol_column(headers)
+    score_col = pick_score_column(headers)
 
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def ensure_data_dirs(data_dir: str) -> Dict[str, Path]:
-    root = Path(data_dir)
-    uploads = root / "uploads"
-    root.mkdir(parents=True, exist_ok=True)
-    uploads.mkdir(parents=True, exist_ok=True)
-    return {"root": root, "uploads": uploads}
-
-
-def append_event(data_dir: str, event_type: str, payload: Dict[str, Any]) -> None:
-    paths = ensure_data_dirs(data_dir)
-    event = {
-        "ts": utc_now(),
-        "type": event_type,
-        "payload": payload,
-    }
-    with (paths["root"] / "events.jsonl").open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, default=str, sort_keys=True) + "\n")
-
-
-def save_upload_record(data_dir: str, record: UploadRecord) -> None:
-    paths = ensure_data_dirs(data_dir)
-    index_path = paths["root"] / "uploads.jsonl"
-    with index_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(asdict(record), sort_keys=True) + "\n")
-
-
-def load_uploads(data_dir: str) -> List[UploadRecord]:
-    paths = ensure_data_dirs(data_dir)
-    index_path = paths["root"] / "uploads.jsonl"
-    if not index_path.exists():
-        return []
-    records: List[UploadRecord] = []
-    with index_path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
+    candidates = []
+    if symbol_col:
+        for row in rows:
+            symbol = str(row.get(symbol_col, "")).strip().upper()
+            if not symbol:
                 continue
-            records.append(UploadRecord(**json.loads(line)))
-    return records
+            candidates.append(
+                {
+                    "symbol": symbol,
+                    "score": _to_float(row.get(score_col)) if score_col else None,
+                    "row": row,
+                }
+            )
+    else:
+        for symbol in extract_symbols(text):
+            candidates.append({"symbol": symbol, "score": None, "row": {}})
+
+    if score_col:
+        candidates.sort(
+            key=lambda item: item["score"] if item["score"] is not None else float("-inf"),
+            reverse=True,
+        )
+
+    return {
+        "kind": "csv",
+        "headers": headers,
+        "row_count": len(rows),
+        "symbol_column": symbol_col,
+        "score_column": score_col,
+        "symbols": [item["symbol"] for item in candidates[:100]],
+        "top_candidates": candidates[:25],
+        "text_preview": text[:2000],
+    }
 
 
-def latest_upload(data_dir: str) -> Optional[UploadRecord]:
-    records = load_uploads(data_dir)
-    return records[-1] if records else None
+def parse_pdf_bytes(raw: bytes) -> Dict[str, Any]:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise RuntimeError("PDF support requires pypdf") from exc
+
+    reader = PdfReader(io.BytesIO(raw))
+    page_texts = []
+    for page in reader.pages[:25]:
+        page_texts.append(page.extract_text() or "")
+    text = "\n".join(page_texts)
+    symbols = extract_symbols(text)
+    return {
+        "kind": "pdf",
+        "page_count": len(reader.pages),
+        "symbols": symbols[:100],
+        "top_candidates": [
+            {"symbol": symbol, "score": None, "row": {}} for symbol in symbols[:25]
+        ],
+        "text_preview": text[:3000],
+    }
 
 
-def new_upload_path(data_dir: str, filename: str) -> tuple[str, Path]:
-    paths = ensure_data_dirs(data_dir)
+def parse_upload(filename: str, raw: bytes, content_type: str = "") -> Dict[str, Any]:
     suffix = Path(filename).suffix.lower()
-    upload_id = f"up_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-    return upload_id, paths["uploads"] / f"{upload_id}{suffix}"
-
-
-def extract_symbols(text: str) -> List[str]:
-    found = []
-    seen = set()
-    for match in SYMBOL_RE.finditer(text.upper()):
-        symbol = match.group(0)
-        if symbol in COMMON_FALSE_SYMBOLS or symbol in seen:
-            continue
-        seen.add(symbol)
-        found.append(symbol)
-    return found
-
-
-def pick_symbol_column(headers: Iterable[str]) -> Optional[str]:
-    normalized = {h.lower().strip(): h for h in headers}
-    for candidate in ("symbol", "ticker", "asset", "stock"):
-        if candidate in normalized:
-            return normalized[candidate]
-    return None
-
-
-def pick_score_column(headers: Iterable[str]) -> Optional[str]:
-    lower_map = {h.lower().strip(): h for h in headers}
-    preferred = ("score", "rank", "rating", "strength", "signal")
-    for name in preferred:
-        if name in lower_map:
-            return lower_map[name]
-    for header in headers:
-        lower = header.lower()
-        if "score" in lower or "rank" in lower:
-            return header
-    return None
+    if suffix == ".csv" or "csv" in content_type:
+        return parse_csv_bytes(raw)
+    if suffix == ".pdf" or "pdf" in content_type:
+        return parse_pdf_bytes(raw)
+    text = raw.decode("utf-8", errors="replace")
+    symbols = extract_symbols(text)
+    return {
+        "kind": "text",
+        "symbols": symbols[:100],
+        "top_candidates": [
+            {"symbol": symbol, "score": None, "row": {}} for symbol in symbols[:25]
+        ],
+        "text_preview": text[:3000],
+    }

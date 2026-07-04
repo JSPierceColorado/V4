@@ -1,8 +1,17 @@
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-requests==2.32.3
-python-multipart==0.0.20
-pypdf==5.1.0
-openai>=2.0.0,<3.0.0
-socksio==1.0.0
-pytest==8.3.4
+APP_NAME=v4-agentic-trader
+ADMIN_TOKEN=replace-with-a-long-random-token
+
+ALPACA_API_KEY=
+ALPACA_SECRET_KEY=
+ALPACA_PAPER=true
+ALPACA_DATA_FEED=iex
+
+# Optional. Without this, v4 still accepts direct commands through regex/rules.
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5.2
+
+DEFAULT_ORDER_QTY=1
+DEFAULT_TIME_IN_FORCE=day
+EXTENDED_HOURS=false
+MAX_UPLOAD_MB=10
+DATA_DIR=./data

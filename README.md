@@ -1,97 +1,12 @@
-# v4 Agentic Trader
+FROM python:3.12-slim
 
-One FastAPI service for Railway. It accepts CSV/PDF/text inputs, understands natural-language commands, and has direct control over an Alpaca paper account.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-## Endpoints
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-- `GET /health`
-- `GET /state`
-- `GET /uploads`
-- `GET /metrics`
-- `POST /upload`
-- `POST /query`
-- `POST /run`
-- `POST /order`
-- `POST /cancel-all`
-- `POST /close-all`
+COPY . .
 
-Open the browser UI at:
-
-```text
-https://your-railway-url/chat
-```
-
-All endpoints except `/health` require:
-
-```text
-X-Admin-Token: your ADMIN_TOKEN
-```
-
-## Railway
-
-Deploy the `v4_agent` folder as the service root, then set env vars from `env.example`.
-
-## Try It
-
-```bash
-curl https://your-railway-url/health
-```
-
-```bash
-curl -H "X-Admin-Token: $ADMIN_TOKEN" https://your-railway-url/state
-```
-
-Upload a CSV:
-
-```bash
-curl -X POST \
-  -H "X-Admin-Token: $ADMIN_TOKEN" \
-  -F "file=@signals.csv" \
-  https://your-railway-url/upload
-```
-
-Ask it to act:
-
-```bash
-curl -X POST \
-  -H "X-Admin-Token: $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"buy 1 share of AAPL with a limit order at 190","execute":true}' \
-  https://your-railway-url/query
-```
-
-Run the latest upload as a simple one-candidate paper strategy:
-
-```bash
-curl -X POST \
-  -H "X-Admin-Token: $ADMIN_TOKEN" \
-  "https://your-railway-url/run?dry_run=true"
-```
-
-Remove `dry_run=true` to place the paper order.
-
-## OpenAI Model
-
-Use a full model id:
-
-```env
-OPENAI_MODEL=gpt-5.2
-```
-
-The app also accepts short aliases like `5.2`, `5.1`, `mini`, and `nano`.
-
-## Metrics
-
-Ask in chat:
-
-```text
-show metrics
-```
-
-or call:
-
-```bash
-curl -H "X-Admin-Token: $ADMIN_TOKEN" https://your-railway-url/metrics
-```
-
-The metrics view includes compact KPI tiles plus charts for equity trend, drawdown trend, daily P/L, and a simple projected equity path.
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
