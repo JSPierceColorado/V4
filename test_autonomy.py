@@ -1,55 +1,33 @@
-from metrics import build_metrics
+from config import load_settings
+from evolution import load_evolution_state
+from research import run_research
 
 
-class FakeAlpaca:
-    def state(self):
-        return {
-            "account": {
-                "status": "ACTIVE",
-                "equity": "1000",
-                "last_equity": "990",
-                "cash": "250",
-                "buying_power": "500",
-                "initial_margin": "100",
-            },
-            "positions": [
-                {
-                    "symbol": "AAPL",
-                    "market_value": "300",
-                    "unrealized_pl": "10",
-                    "unrealized_plpc": "0.05",
-                },
-                {
-                    "symbol": "MSFT",
-                    "market_value": "200",
-                    "unrealized_pl": "-5",
-                    "unrealized_plpc": "-0.025",
-                },
-            ],
-            "open_orders": [{"id": "1"}],
-        }
-
-    def portfolio_history(self):
-        return {
-            "timestamp": [1000, 2000, 3000],
-            "equity": [900, 1100, 1000],
-            "profit_loss": [0, 200, -100],
-        }
+def _bars(count: int = 180):
+    bars = []
+    price = 10.0
+    for index in range(count):
+        price *= 1.004
+        bars.append({"c": round(price, 4), "v": 500000 + index * 1000})
+    return bars
 
 
-def test_build_metrics_shape() -> None:
-    metrics = build_metrics(FakeAlpaca())
-    assert metrics["tiles"]
-    assert metrics["charts"]["equity"]
-    assert metrics["charts"]["drawdown"][-1]["drawdown"] < 0
-    assert "Equity" == metrics["tiles"][0]["label"]
+def test_research_backtests_and_deploys_best_strategy(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    settings = load_settings()
 
+    class FakeAlpaca:
+        def active_tradable_us_equity_symbols(self):
+            return ["AAA", "BBB", "CCC"]
 
-def test_projection_requires_enough_history() -> None:
-    class ShortHistoryAlpaca(FakeAlpaca):
-        def portfolio_history(self):
-            return {"timestamp": [1000], "equity": [1000], "profit_loss": [0]}
+        def stock_bars(self, symbols, *, start):
+            return {"bars": {symbol: _bars() for symbol in symbols}}
 
-    metrics = build_metrics(ShortHistoryAlpaca())
-    assert metrics["charts"]["projected_equity"] == []
-    assert "hidden" in metrics["notes"]["projection"]
+    result = run_research(settings, FakeAlpaca())
+    state = load_evolution_state(settings.data_dir)
+
+    assert result["ok"] is True
+    assert result["research"]["variants_tested"] > 0
+    assert result["research"]["best_strategy_id"] == state["active_strategy_id"]
+    assert state["active_strategy_id"].startswith("research_")
+    assert state["strategies"][state["active_strategy_id"]]["backtest"]["validation"]["trades"] > 0

@@ -82,6 +82,8 @@ class Settings:
     autonomy_max_positions: int
     autonomy_position_buying_power_pct: float
     autonomy_screen_symbols_per_cycle: int
+    autonomy_research_enabled: bool
+    autonomy_research_interval_seconds: int
 
     @property
     def alpaca_ready(self) -> bool:
@@ -142,5 +144,9 @@ def load_settings() -> Settings:
         ),
         autonomy_screen_symbols_per_cycle=env_int(
             "AUTONOMY_SCREEN_SYMBOLS_PER_CYCLE", 100
+        ),
+        autonomy_research_enabled=env_bool("AUTONOMY_RESEARCH_ENABLED", True),
+        autonomy_research_interval_seconds=env_int(
+            "AUTONOMY_RESEARCH_INTERVAL_SECONDS", 21600
         ),
     )

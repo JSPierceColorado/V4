@@ -115,6 +115,8 @@ AUTONOMY_MAX_ORDERS_PER_CYCLE=0
 AUTONOMY_MAX_POSITIONS=0
 AUTONOMY_POSITION_BUYING_POWER_PCT=0.02
 AUTONOMY_SCREEN_SYMBOLS_PER_CYCLE=100
+AUTONOMY_RESEARCH_ENABLED=true
+AUTONOMY_RESEARCH_INTERVAL_SECONDS=21600
 ```
 
 The strategy layer starts with balanced, fast, and runner variants. Positions are tagged to the strategy that opened them. Exits update each strategy's win rate, average P/L, and fitness, then the loop promotes the best performer.
@@ -127,4 +129,19 @@ run one autonomous cycle
 start autonomy
 stop autonomy
 autonomy status
+research strategies
+```
+
+## Research and Backtesting
+
+The research layer generates strategy variants, backtests them on historical daily bars, and deploys the highest-fitness variant into the live paper strategy state. It uses a train/test split, then reports validation return, win rate, trade count, and the active strategy.
+
+Research also runs automatically inside the background autonomy engine. By default, v4 checks before each 10-minute trading cycle and runs research when at least 6 hours have passed since the last periodic research job.
+
+Ask in chat:
+
+```text
+research strategies
+backtest strategies
+deploy best strategy
 ```

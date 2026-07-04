@@ -13,8 +13,10 @@ DEFAULT_STRATEGIES: Dict[str, Dict[str, Any]] = {
         "id": "momentum_balanced",
         "label": "Momentum balanced",
         "score_bias": 0.0,
+        "min_entry_score": 0.0,
         "take_profit_pct": 0.04,
         "stop_loss_pct": -0.025,
+        "max_hold_days": 20,
         "stats": {
             "entries": 0,
             "exits": 0,
@@ -28,8 +30,10 @@ DEFAULT_STRATEGIES: Dict[str, Dict[str, Any]] = {
         "id": "momentum_fast",
         "label": "Momentum fast",
         "score_bias": 4.0,
+        "min_entry_score": 0.0,
         "take_profit_pct": 0.025,
         "stop_loss_pct": -0.015,
+        "max_hold_days": 10,
         "stats": {
             "entries": 0,
             "exits": 0,
@@ -43,8 +47,10 @@ DEFAULT_STRATEGIES: Dict[str, Dict[str, Any]] = {
         "id": "momentum_runner",
         "label": "Momentum runner",
         "score_bias": -3.0,
+        "min_entry_score": 0.0,
         "take_profit_pct": 0.075,
         "stop_loss_pct": -0.04,
+        "max_hold_days": 35,
         "stats": {
             "entries": 0,
             "exits": 0,
@@ -81,6 +87,9 @@ def load_evolution_state(data_dir: str) -> Dict[str, Any]:
     for strategy_id, strategy in DEFAULT_STRATEGIES.items():
         if strategy_id not in strategies:
             strategies[strategy_id] = deepcopy(strategy)
+    for strategy in strategies.values():
+        strategy.setdefault("min_entry_score", 0.0)
+        strategy.setdefault("max_hold_days", 20)
     state.setdefault("positions", {})
     state.setdefault("active_strategy_id", "momentum_balanced")
     return state

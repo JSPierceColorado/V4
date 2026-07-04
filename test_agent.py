@@ -4,6 +4,7 @@ import autonomy
 from alpaca_rest import AlpacaError
 from autonomy import AutonomyEngine
 from config import load_settings
+from evolution import load_evolution_state
 from screener import screen_symbols
 
 
@@ -18,6 +19,8 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
         "AUTONOMY_MAX_POSITIONS",
         "AUTONOMY_POSITION_BUYING_POWER_PCT",
         "AUTONOMY_SCREEN_SYMBOLS_PER_CYCLE",
+        "AUTONOMY_RESEARCH_ENABLED",
+        "AUTONOMY_RESEARCH_INTERVAL_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -32,6 +35,8 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
     assert settings.autonomy_max_positions == 0
     assert settings.autonomy_position_buying_power_pct == 0.02
     assert settings.autonomy_screen_symbols_per_cycle == 100
+    assert settings.autonomy_research_enabled is True
+    assert settings.autonomy_research_interval_seconds == 21600
 
 
 def test_blank_symbol_universe_uses_active_tradable_assets() -> None:
@@ -116,6 +121,29 @@ def test_autonomy_start_returns_status_without_deadlock(monkeypatch) -> None:
     assert not thread.is_alive()
     assert result["ok"] is True
     assert result["status"]["running"] is True
+
+
+def test_periodic_research_runs_when_due_then_skips(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    engine = AutonomyEngine(settings)
+    calls = []
+
+    def fake_research(settings_arg, alpaca_arg):
+        calls.append((settings_arg, alpaca_arg))
+        return {"ok": True, "reply": "researched"}
+
+    monkeypatch.setattr(autonomy, "run_research", fake_research)
+
+    first = engine.maybe_run_research(object())
+    second = engine.maybe_run_research(object())
+    state = load_evolution_state(settings.data_dir)
+
+    assert first["ok"] is True
+    assert second["skipped"] is True
+    assert second["reason"] == "not_due"
+    assert len(calls) == 1
+    assert state["last_periodic_research_at"]
 
 
 def test_autonomy_sizes_entry_at_two_percent_of_buying_power(

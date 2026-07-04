@@ -10,6 +10,7 @@ from autonomy import AutonomyEngine
 from config import Settings, load_settings
 from ingest import parse_upload
 from metrics import build_metrics
+from research import run_research
 from screener import screen_symbols
 from storage import (
     UploadRecord,
@@ -723,6 +724,14 @@ def autonomy_cycle() -> Dict[str, Any]:
     return {"ok": True, "reply": result["summary"], "autonomy": result}
 
 
+@app.post("/research", dependencies=[Depends(require_auth)])
+def research() -> Dict[str, Any]:
+    client = alpaca()
+    result = api_result(lambda: run_research(settings, client))
+    append_event(settings.data_dir, "research", result)
+    return result
+
+
 @app.post("/upload", dependencies=[Depends(require_auth)])
 async def upload(file: UploadFile = File(...)) -> Dict[str, Any]:
     raw = await file.read()
@@ -834,6 +843,8 @@ def query(req: QueryRequest) -> Dict[str, Any]:
         result = autonomy_status()
     elif action == "autonomy_cycle":
         result = autonomy_cycle()
+    elif action == "research":
+        result = research()
     elif action == "cancel_all_orders":
         result = cancel_all()
     elif action == "close_all_positions":

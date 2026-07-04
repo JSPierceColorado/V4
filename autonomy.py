@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from alpaca_rest import AlpacaError, AlpacaRest
@@ -18,6 +19,7 @@ from evolution import (
     tag_entry,
     tag_exit,
 )
+from research import run_research
 from screener import screen_symbols
 from storage import append_event, utc_now
 
@@ -31,6 +33,32 @@ def _float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _age_days(opened_at: Any) -> float:
+    if not opened_at:
+        return 0.0
+    try:
+        raw = str(opened_at).replace("Z", "+00:00")
+        opened = datetime.fromisoformat(raw)
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - opened).total_seconds() / 86400)
+    except ValueError:
+        return 0.0
+
+
+def _seconds_since(timestamp: Any) -> float:
+    if not timestamp:
+        return 10**12
+    try:
+        raw = str(timestamp).replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
+    except ValueError:
+        return 10**12
+
+
 @dataclass
 class AutonomySnapshot:
     running: bool
@@ -38,6 +66,9 @@ class AutonomySnapshot:
     last_finished_at: Optional[str] = None
     last_error: Optional[str] = None
     last_result: Optional[Dict[str, Any]] = None
+    last_research_at: Optional[str] = None
+    last_research_result: Optional[Dict[str, Any]] = None
+    last_research_error: Optional[str] = None
     cycles: int = 0
 
 
@@ -99,10 +130,15 @@ class AutonomyEngine:
             ),
             "position_buying_power_pct": self.settings.autonomy_position_buying_power_pct,
             "screen_symbols_per_cycle": self.settings.autonomy_screen_symbols_per_cycle,
+            "research_enabled": self.settings.autonomy_research_enabled,
+            "research_interval_seconds": self.settings.autonomy_research_interval_seconds,
             "last_started_at": self.snapshot.last_started_at,
             "last_finished_at": self.snapshot.last_finished_at,
             "last_error": self.snapshot.last_error,
             "last_result": self.snapshot.last_result,
+            "last_research_at": self.snapshot.last_research_at,
+            "last_research_result": self.snapshot.last_research_result,
+            "last_research_error": self.snapshot.last_research_error,
             "strategy": strategy_snapshot(load_evolution_state(self.settings.data_dir)),
             "cycles": self.snapshot.cycles,
         }
@@ -110,7 +146,9 @@ class AutonomyEngine:
     def _loop(self, alpaca_factory) -> None:
         while not self._stop.is_set():
             try:
-                self.run_cycle(alpaca_factory())
+                alpaca = alpaca_factory()
+                self.maybe_run_research(alpaca)
+                self.run_cycle(alpaca)
             except Exception as exc:
                 with self._lock:
                     self.snapshot.last_error = str(exc)
@@ -119,6 +157,46 @@ class AutonomyEngine:
             self._stop.wait(max(10, self.settings.autonomy_interval_seconds))
         with self._lock:
             self.snapshot.running = False
+
+    def maybe_run_research(self, alpaca: AlpacaRest) -> Dict[str, Any]:
+        if not self.settings.autonomy_research_enabled:
+            return {"ok": True, "skipped": True, "reason": "research_disabled"}
+        state = load_evolution_state(self.settings.data_dir)
+        last_at = state.get("last_periodic_research_at") or (
+            state.get("last_research") or {}
+        ).get("researched_at")
+        if _seconds_since(last_at) < self.settings.autonomy_research_interval_seconds:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "not_due",
+                "last_periodic_research_at": last_at,
+            }
+
+        try:
+            result = run_research(self.settings, alpaca)
+            state = load_evolution_state(self.settings.data_dir)
+            state["last_periodic_research_at"] = utc_now()
+            save_evolution_state(self.settings.data_dir, state)
+            with self._lock:
+                self.snapshot.last_research_at = state["last_periodic_research_at"]
+                self.snapshot.last_research_result = result
+                self.snapshot.last_research_error = None
+            append_event(self.settings.data_dir, "periodic_research", result)
+            return result
+        except Exception as exc:
+            state = load_evolution_state(self.settings.data_dir)
+            state["last_periodic_research_at"] = utc_now()
+            save_evolution_state(self.settings.data_dir, state)
+            with self._lock:
+                self.snapshot.last_research_at = state["last_periodic_research_at"]
+                self.snapshot.last_research_error = str(exc)
+            append_event(
+                self.settings.data_dir,
+                "periodic_research_error",
+                {"error": str(exc)},
+            )
+            return {"ok": False, "error": str(exc)}
 
     def run_cycle(self, alpaca: AlpacaRest) -> Dict[str, Any]:
         started = utc_now()
@@ -160,11 +238,14 @@ class AutonomyEngine:
                 or active_strategy(evolution_state)
             )
             plpc = _float(position.get("unrealized_plpc"))
+            age_days = _age_days(tracked.get("opened_at"))
             reason = ""
             if plpc >= _float(strategy.get("take_profit_pct")):
                 reason = "take_profit"
             elif plpc <= _float(strategy.get("stop_loss_pct")):
                 reason = "stop_loss"
+            elif age_days >= _float(strategy.get("max_hold_days"), 10**9):
+                reason = "max_hold"
             if not reason:
                 continue
             qty = abs(_float(position.get("qty")))
@@ -183,6 +264,7 @@ class AutonomyEngine:
                 "strategy": strategy,
                 "reason": reason,
                 "plpc": plpc,
+                "age_days": round(age_days, 2),
                 "position": position,
                 "order_args": order_args,
                 "dry_run": self.settings.autonomy_dry_run,
@@ -227,6 +309,8 @@ class AutonomyEngine:
                 break
             symbol = candidate["symbol"]
             if self.settings.autonomy_min_score > 0 and candidate["score"] < self.settings.autonomy_min_score:
+                continue
+            if adjusted_score(candidate, strategy) < _float(strategy.get("min_entry_score")):
                 continue
             if symbol in held or symbol in ordered:
                 continue
