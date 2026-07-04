@@ -1,0 +1,39 @@
+from agent import friendly_openai_error, rule_parse
+from config import normalize_openai_model
+
+
+def test_rule_parse_limit_buy() -> None:
+    parsed = rule_parse("buy 1 share of AAPL with a limit order at 190")
+    assert parsed["action"] == "place_order"
+    assert parsed["args"]["symbol"] == "AAPL"
+    assert parsed["args"]["side"] == "buy"
+    assert parsed["args"]["qty"] == 1.0
+    assert parsed["args"]["order_type"] == "limit"
+    assert parsed["args"]["limit_price"] == 190.0
+
+
+def test_rule_parse_cancel_all() -> None:
+    parsed = rule_parse("cancel all open orders")
+    assert parsed["action"] == "cancel_all_orders"
+
+
+def test_rule_parse_close_all() -> None:
+    parsed = rule_parse("close all positions")
+    assert parsed["action"] == "close_all_positions"
+
+
+def test_rule_parse_metrics() -> None:
+    parsed = rule_parse("show me graphs and performance metrics")
+    assert parsed["action"] == "metrics"
+
+
+def test_normalize_openai_model_aliases() -> None:
+    assert normalize_openai_model("5.1") == "gpt-5.1"
+    assert normalize_openai_model("5.2") == "gpt-5.2"
+    assert normalize_openai_model("mini") == "gpt-5-mini"
+
+
+def test_friendly_quota_error() -> None:
+    message = friendly_openai_error(Exception("code='insufficient_quota'"))
+    assert "quota" in message.lower()
+    assert "rule-based" in message
