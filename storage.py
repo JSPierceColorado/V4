@@ -62,6 +62,24 @@ def append_event(data_dir: str, event_type: str, payload: Dict[str, Any]) -> Non
         handle.write(json.dumps(event, default=str, sort_keys=True) + "\n")
 
 
+def load_events(data_dir: str, limit: int = 25) -> List[Dict[str, Any]]:
+    paths = ensure_data_dirs(data_dir)
+    event_path = paths["root"] / "events.jsonl"
+    if not event_path.exists():
+        return []
+    events: List[Dict[str, Any]] = []
+    with event_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return events[-limit:]
+
+
 def save_upload_record(data_dir: str, record: UploadRecord) -> None:
     paths = ensure_data_dirs(data_dir)
     index_path = paths["root"] / "uploads.jsonl"

@@ -58,6 +58,8 @@ def rule_parse(message: str) -> Dict[str, Any]:
     lowered = message.lower()
     if "cycle" in lowered and ("autonom" in lowered or "agent" in lowered):
         return {"action": "autonomy_cycle", "args": {}}
+    if "operator" in lowered and any(word in lowered for word in ("run", "cycle", "decide", "think", "operate")):
+        return {"action": "agent_cycle", "args": {}}
     if "autonom" in lowered and any(word in lowered for word in ("start", "enable", "turn on", "run")):
         return {"action": "autonomy_start", "args": {}}
     if "autonom" in lowered and any(word in lowered for word in ("stop", "disable", "pause", "turn off")):
@@ -66,6 +68,8 @@ def rule_parse(message: str) -> Dict[str, Any]:
         return {"action": "autonomy_status", "args": {}}
     if "market" in lowered and any(word in lowered for word in ("open", "closed", "clock", "hours")):
         return {"action": "clock", "args": {}}
+    if any(phrase in lowered for phrase in ("recent actions", "recent events", "action log", "journal", "what did you do")):
+        return {"action": "events", "args": {}}
     if any(word in lowered for word in ("research", "backtest", "backtesting")) or (
         "strategy" in lowered and any(phrase in lowered for phrase in ("deploy best", "find best", "test variants"))
     ):
@@ -122,8 +126,8 @@ def llm_parse(settings: Settings, message: str, context: Dict[str, Any]) -> Dict
     system = (
         "You are v4, a concise paper-trading assistant and command parser. "
         "Return only JSON with keys action and args. "
-        "Allowed actions: state, clock, metrics, screen, autonomy_start, autonomy_stop, "
-        "autonomy_status, autonomy_cycle, research, analyze, run, place_order, "
+        "Allowed actions: state, clock, events, metrics, screen, autonomy_start, autonomy_stop, "
+        "autonomy_status, autonomy_cycle, agent_cycle, research, analyze, run, place_order, "
         "cancel_all_orders, close_all_positions, reply. "
         "Only choose place_order when the user clearly asks to place a paper order. "
         "For place_order args include symbol, side, qty, notional, order_type, "

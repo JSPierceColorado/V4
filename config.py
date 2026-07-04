@@ -84,6 +84,7 @@ class Settings:
     autonomy_screen_symbols_per_cycle: int
     autonomy_research_enabled: bool
     autonomy_research_interval_seconds: int
+    agent_operator_enabled: bool
 
     @property
     def alpaca_ready(self) -> bool:
@@ -149,4 +150,5 @@ def load_settings() -> Settings:
         autonomy_research_interval_seconds=env_int(
             "AUTONOMY_RESEARCH_INTERVAL_SECONDS", 21600
         ),
+        agent_operator_enabled=env_bool("AGENT_OPERATOR_ENABLED", True),
     )

@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from agent_operator import (
+    build_operator_context,
+    journal_operator_cycle,
+    model_plan,
+)
 from alpaca_rest import AlpacaError, AlpacaRest
 from config import Settings
 from evolution import (
@@ -19,6 +24,7 @@ from evolution import (
     tag_entry,
     tag_exit,
 )
+from metrics import build_metrics
 from research import run_research
 from screener import screen_symbols
 from storage import append_event, utc_now
@@ -152,6 +158,7 @@ class AutonomyEngine:
             "screen_symbols_per_cycle": self.settings.autonomy_screen_symbols_per_cycle,
             "research_enabled": self.settings.autonomy_research_enabled,
             "research_interval_seconds": self.settings.autonomy_research_interval_seconds,
+            "agent_operator_enabled": self.settings.agent_operator_enabled,
             "last_started_at": self.snapshot.last_started_at,
             "last_finished_at": self.snapshot.last_finished_at,
             "last_error": self.snapshot.last_error,
@@ -167,8 +174,11 @@ class AutonomyEngine:
         while not self._stop.is_set():
             try:
                 alpaca = alpaca_factory()
-                self.maybe_run_research(alpaca)
-                self.run_cycle(alpaca)
+                if self.settings.agent_operator_enabled:
+                    self.run_operator_cycle(alpaca)
+                else:
+                    self.maybe_run_research(alpaca)
+                    self.run_cycle(alpaca)
             except Exception as exc:
                 with self._lock:
                     self.snapshot.last_error = str(exc)
@@ -177,6 +187,76 @@ class AutonomyEngine:
             self._stop.wait(max(10, self.settings.autonomy_interval_seconds))
         with self._lock:
             self.snapshot.running = False
+
+    def run_operator_cycle(self, alpaca: AlpacaRest) -> Dict[str, Any]:
+        started = utc_now()
+        with self._lock:
+            self.snapshot.last_started_at = started
+            self.snapshot.last_error = None
+
+        state = alpaca.state()
+        context = build_operator_context(
+            self.settings,
+            state=state,
+            autonomy_status=self.status(),
+        )
+        plan = model_plan(self.settings, context)
+        results = []
+        for action in plan.get("actions") or []:
+            tool = action.get("tool")
+            try:
+                if tool == "research":
+                    result = self.maybe_run_research(alpaca)
+                elif tool == "autonomy_cycle":
+                    result = self.run_cycle(alpaca)
+                elif tool == "screen":
+                    result = screen_symbols(
+                        alpaca,
+                        self.settings.autonomy_symbols or None,
+                        max_symbols_per_cycle=self.settings.autonomy_screen_symbols_per_cycle,
+                    )
+                elif tool == "metrics":
+                    result = {
+                        "ok": True,
+                        "reply": "Metrics loaded.",
+                        "metrics": build_metrics(alpaca),
+                    }
+                elif tool == "clock":
+                    result = {"ok": True, "reply": "Clock loaded.", "clock": state.get("clock") or alpaca.clock()}
+                elif tool == "state":
+                    result = {"ok": True, "reply": "State loaded.", "state": state}
+                elif tool == "wait":
+                    result = {"ok": True, "reply": action.get("reason") or "Waiting."}
+                else:
+                    result = {"ok": False, "error": f"Unknown operator tool: {tool}"}
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+            results.append(
+                {
+                    "tool": tool,
+                    "reason": action.get("reason"),
+                    **result,
+                }
+            )
+
+        journal = journal_operator_cycle(
+            self.settings.data_dir,
+            plan=plan,
+            results=results,
+        )
+        result = {
+            "ok": True,
+            "started_at": started,
+            "finished_at": utc_now(),
+            "summary": journal["summary"],
+            "operator": journal,
+        }
+        append_event(self.settings.data_dir, "agent_operator_cycle", result)
+        with self._lock:
+            self.snapshot.last_finished_at = result["finished_at"]
+            self.snapshot.last_result = result
+            self.snapshot.cycles += 1
+        return result
 
     def maybe_run_research(self, alpaca: AlpacaRest) -> Dict[str, Any]:
         if not self.settings.autonomy_research_enabled:

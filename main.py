@@ -16,6 +16,7 @@ from storage import (
     UploadRecord,
     append_event,
     latest_upload,
+    load_events,
     load_uploads,
     new_upload_path,
     save_upload_record,
@@ -685,6 +686,17 @@ def uploads() -> Dict[str, Any]:
     return {"uploads": [record.__dict__ for record in records[-25:]]}
 
 
+@app.get("/events", dependencies=[Depends(require_auth)])
+def events(limit: int = 20) -> Dict[str, Any]:
+    limit = max(1, min(limit, 100))
+    rows = load_events(settings.data_dir, limit=limit)
+    return {
+        "ok": True,
+        "reply": f"Loaded {len(rows)} recent event(s).",
+        "events": rows,
+    }
+
+
 @app.get("/metrics", dependencies=[Depends(require_auth)])
 def metrics() -> Dict[str, Any]:
     client = alpaca()
@@ -737,8 +749,18 @@ def autonomy_stop() -> Dict[str, Any]:
 @app.post("/autonomy/cycle", dependencies=[Depends(require_auth)])
 def autonomy_cycle() -> Dict[str, Any]:
     client = alpaca()
+    if settings.agent_operator_enabled:
+        result = api_result(lambda: autonomy_engine.run_operator_cycle(client))
+        return {"ok": True, "reply": result["summary"], "operator": result}
     result = api_result(lambda: autonomy_engine.run_cycle(client))
     return {"ok": True, "reply": result["summary"], "autonomy": result}
+
+
+@app.post("/agent/cycle", dependencies=[Depends(require_auth)])
+def agent_cycle() -> Dict[str, Any]:
+    client = alpaca()
+    result = api_result(lambda: autonomy_engine.run_operator_cycle(client))
+    return {"ok": True, "reply": result["summary"], "operator": result}
 
 
 @app.post("/research", dependencies=[Depends(require_auth)])
@@ -852,6 +874,8 @@ def query(req: QueryRequest) -> Dict[str, Any]:
         result = clock()
     elif action == "metrics":
         result = metrics()
+    elif action == "events":
+        result = events()
     elif action == "screen":
         result = screen()
     elif action == "autonomy_start":
@@ -862,6 +886,8 @@ def query(req: QueryRequest) -> Dict[str, Any]:
         result = autonomy_status()
     elif action == "autonomy_cycle":
         result = autonomy_cycle()
+    elif action == "agent_cycle":
+        result = agent_cycle()
     elif action == "research":
         result = research()
     elif action == "cancel_all_orders":

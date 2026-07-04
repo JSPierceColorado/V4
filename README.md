@@ -117,9 +117,12 @@ AUTONOMY_POSITION_BUYING_POWER_PCT=0.02
 AUTONOMY_SCREEN_SYMBOLS_PER_CYCLE=100
 AUTONOMY_RESEARCH_ENABLED=true
 AUTONOMY_RESEARCH_INTERVAL_SECONDS=21600
+AGENT_OPERATOR_ENABLED=true
 ```
 
 The strategy layer starts with balanced, fast, and runner variants. Positions are tagged to the strategy that opened them. Exits update each strategy's win rate, average P/L, and fitness, then the loop promotes the best performer.
+
+When `AGENT_OPERATOR_ENABLED=true`, the background loop asks the model to choose which tools to run. The existing screener, research engine, metrics, clock, and order-management cycle become tools for the operator instead of acting as the whole brain.
 
 Ask in chat:
 
@@ -131,6 +134,8 @@ start autonomy
 stop autonomy
 autonomy status
 research strategies
+run operator cycle
+show recent actions
 ```
 
 ## Research and Backtesting
