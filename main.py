@@ -678,7 +678,9 @@ def metrics() -> Dict[str, Any]:
 @app.get("/screen", dependencies=[Depends(require_auth)])
 def screen() -> Dict[str, Any]:
     client = alpaca()
-    result = api_result(lambda: screen_symbols(client, settings.autonomy_symbols))
+    result = api_result(
+        lambda: screen_symbols(client, settings.autonomy_symbols or None)
+    )
     append_event(settings.data_dir, "screen", {"summary": result})
     return {
         "ok": True,

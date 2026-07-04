@@ -103,16 +103,16 @@ The metrics view includes compact KPI tiles plus charts for equity trend, drawdo
 
 ## Autonomy
 
-The autonomous loop screens a configured symbol universe, picks high-scoring candidates, and prepares paper orders. It defaults to dry-run.
+The autonomous loop screens symbols, ranks candidates, and places paper orders. Blank `AUTONOMY_SYMBOLS` means all active tradable US equities. Zero caps mean unlimited.
 
 ```env
-AUTONOMY_ENABLED=false
-AUTONOMY_DRY_RUN=true
-AUTONOMY_INTERVAL_SECONDS=900
-AUTONOMY_SYMBOLS=SPY,QQQ,IWM,AAPL,MSFT,NVDA,AMD,TSLA,META,GOOGL,AMZN
-AUTONOMY_MIN_SCORE=65
-AUTONOMY_MAX_ORDERS_PER_CYCLE=1
-AUTONOMY_MAX_POSITIONS=5
+AUTONOMY_ENABLED=true
+AUTONOMY_DRY_RUN=false
+AUTONOMY_INTERVAL_SECONDS=600
+AUTONOMY_SYMBOLS=
+AUTONOMY_MIN_SCORE=0
+AUTONOMY_MAX_ORDERS_PER_CYCLE=0
+AUTONOMY_MAX_POSITIONS=0
 ```
 
 Ask in chat:

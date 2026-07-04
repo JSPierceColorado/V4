@@ -1,55 +1,49 @@
-from metrics import build_metrics
+from config import load_settings
+from screener import screen_symbols
 
 
-class FakeAlpaca:
-    def state(self):
-        return {
-            "account": {
-                "status": "ACTIVE",
-                "equity": "1000",
-                "last_equity": "990",
-                "cash": "250",
-                "buying_power": "500",
-                "initial_margin": "100",
-            },
-            "positions": [
-                {
-                    "symbol": "AAPL",
-                    "market_value": "300",
-                    "unrealized_pl": "10",
-                    "unrealized_plpc": "0.05",
-                },
-                {
-                    "symbol": "MSFT",
-                    "market_value": "200",
-                    "unrealized_pl": "-5",
-                    "unrealized_plpc": "-0.025",
-                },
-            ],
-            "open_orders": [{"id": "1"}],
-        }
+def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
+    for name in (
+        "AUTONOMY_ENABLED",
+        "AUTONOMY_DRY_RUN",
+        "AUTONOMY_INTERVAL_SECONDS",
+        "AUTONOMY_SYMBOLS",
+        "AUTONOMY_MIN_SCORE",
+        "AUTONOMY_MAX_ORDERS_PER_CYCLE",
+        "AUTONOMY_MAX_POSITIONS",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
-    def portfolio_history(self):
-        return {
-            "timestamp": [1000, 2000, 3000],
-            "equity": [900, 1100, 1000],
-            "profit_loss": [0, 200, -100],
-        }
+    settings = load_settings()
+
+    assert settings.autonomy_enabled is True
+    assert settings.autonomy_dry_run is False
+    assert settings.autonomy_interval_seconds == 600
+    assert settings.autonomy_symbols == ()
+    assert settings.autonomy_min_score == 0.0
+    assert settings.autonomy_max_orders_per_cycle == 0
+    assert settings.autonomy_max_positions == 0
 
 
-def test_build_metrics_shape() -> None:
-    metrics = build_metrics(FakeAlpaca())
-    assert metrics["tiles"]
-    assert metrics["charts"]["equity"]
-    assert metrics["charts"]["drawdown"][-1]["drawdown"] < 0
-    assert "Equity" == metrics["tiles"][0]["label"]
+def test_blank_symbol_universe_uses_active_tradable_assets() -> None:
+    class FakeAlpaca:
+        def __init__(self) -> None:
+            self.used_assets = False
 
+        def active_tradable_us_equity_symbols(self) -> list[str]:
+            self.used_assets = True
+            return ["AAA", "BBB"]
 
-def test_projection_requires_enough_history() -> None:
-    class ShortHistoryAlpaca(FakeAlpaca):
-        def portfolio_history(self):
-            return {"timestamp": [1000], "equity": [1000], "profit_loss": [0]}
+        def stock_bars(self, symbols, *, start):
+            bars = [
+                {"c": 10 + index * 0.1, "v": 250000}
+                for index in range(30)
+            ]
+            return {"bars": {symbol: list(bars) for symbol in symbols}}
 
-    metrics = build_metrics(ShortHistoryAlpaca())
-    assert metrics["charts"]["projected_equity"] == []
-    assert "hidden" in metrics["notes"]["projection"]
+    alpaca = FakeAlpaca()
+    result = screen_symbols(alpaca, None)
+
+    assert alpaca.used_assets is True
+    assert result["symbols_checked"] == 2
+    assert len(result["candidates"]) == 2

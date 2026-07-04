@@ -36,10 +36,22 @@ class AutonomyEngine:
                 "running": self.snapshot.running,
                 "dry_run": self.settings.autonomy_dry_run,
                 "interval_seconds": self.settings.autonomy_interval_seconds,
-                "symbols": list(self.settings.autonomy_symbols),
+                "symbols": (
+                    list(self.settings.autonomy_symbols)
+                    if self.settings.autonomy_symbols
+                    else "ALL_ACTIVE_TRADABLE_US_EQUITIES"
+                ),
                 "min_score": self.settings.autonomy_min_score,
-                "max_orders_per_cycle": self.settings.autonomy_max_orders_per_cycle,
-                "max_positions": self.settings.autonomy_max_positions,
+                "max_orders_per_cycle": (
+                    self.settings.autonomy_max_orders_per_cycle
+                    if self.settings.autonomy_max_orders_per_cycle > 0
+                    else "unlimited"
+                ),
+                "max_positions": (
+                    self.settings.autonomy_max_positions
+                    if self.settings.autonomy_max_positions > 0
+                    else "unlimited"
+                ),
                 "last_started_at": self.snapshot.last_started_at,
                 "last_finished_at": self.snapshot.last_finished_at,
                 "last_error": self.snapshot.last_error,
@@ -87,24 +99,28 @@ class AutonomyEngine:
             self.snapshot.last_started_at = started
             self.snapshot.last_error = None
 
-        screen = screen_symbols(alpaca, self.settings.autonomy_symbols)
+        symbols = self.settings.autonomy_symbols or None
+        screen = screen_symbols(alpaca, symbols)
         state = alpaca.state()
         positions = state.get("positions") or []
         open_orders = state.get("open_orders") or []
         held = {str(pos.get("symbol", "")).upper() for pos in positions}
         ordered = {str(order.get("symbol", "")).upper() for order in open_orders}
-        available_slots = max(0, self.settings.autonomy_max_positions - len(positions))
-        order_slots = min(
-            self.settings.autonomy_max_orders_per_cycle,
-            available_slots,
-        )
+        if self.settings.autonomy_max_positions > 0:
+            available_slots = max(0, self.settings.autonomy_max_positions - len(positions))
+        else:
+            available_slots = 10**9
+        if self.settings.autonomy_max_orders_per_cycle > 0:
+            order_slots = min(self.settings.autonomy_max_orders_per_cycle, available_slots)
+        else:
+            order_slots = available_slots
 
         actions = []
         for candidate in screen.get("candidates", []):
             if len(actions) >= order_slots:
                 break
             symbol = candidate["symbol"]
-            if candidate["score"] < self.settings.autonomy_min_score:
+            if self.settings.autonomy_min_score > 0 and candidate["score"] < self.settings.autonomy_min_score:
                 continue
             if symbol in held or symbol in ordered:
                 continue

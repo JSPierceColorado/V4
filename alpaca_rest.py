@@ -72,6 +72,24 @@ class AlpacaRest:
     def positions(self) -> Any:
         return self.trading("GET", "/v2/positions")
 
+    def assets(self, status: str = "active", asset_class: str = "us_equity") -> Any:
+        return self.trading(
+            "GET",
+            "/v2/assets",
+            params={"status": status, "asset_class": asset_class},
+        )
+
+    def active_tradable_us_equity_symbols(self) -> list[str]:
+        assets = self.assets(status="active", asset_class="us_equity")
+        symbols = []
+        for asset in assets:
+            if not asset.get("tradable", False):
+                continue
+            symbol = str(asset.get("symbol", "")).strip().upper()
+            if symbol:
+                symbols.append(symbol)
+        return symbols
+
     def open_orders(self) -> Any:
         return self.trading("GET", "/v2/orders", params={"status": "open", "limit": 500})
 

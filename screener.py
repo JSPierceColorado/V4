@@ -46,12 +46,15 @@ def _score(row: Dict[str, Any]) -> float:
 
 def screen_symbols(
     alpaca: AlpacaRest,
-    symbols: Iterable[str],
+    symbols: Iterable[str] | None,
     *,
     min_price: float = 2.0,
     min_dollar_vol_m: float = 1.0,
-    max_results: int = 50,
+    max_results: int = 0,
 ) -> Dict[str, Any]:
+    if symbols is None:
+        symbols = alpaca.active_tradable_us_equity_symbols()
+
     unique = []
     seen = set()
     for symbol in symbols:
@@ -100,9 +103,10 @@ def screen_symbols(
             candidates.append(row)
 
     candidates.sort(key=lambda item: item["score"], reverse=True)
+    selected = candidates if max_results <= 0 else candidates[:max_results]
     return {
         "ok": True,
         "symbols_checked": len(unique),
         "rejected": rejected,
-        "candidates": candidates[:max_results],
+        "candidates": selected,
     }
