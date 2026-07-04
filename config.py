@@ -90,6 +90,9 @@ class Settings:
     autonomy_research_scout_symbols: int
     autonomy_research_validate_top_variants: int
     autonomy_research_require_profitable: bool
+    autonomy_mutation_enabled: bool
+    autonomy_mutation_variants: int
+    autonomy_mutation_parent_count: int
     autonomy_ai_strategy_lab_enabled: bool
     autonomy_ai_strategy_ideas: int
     agent_operator_enabled: bool
@@ -176,6 +179,9 @@ def load_settings() -> Settings:
         autonomy_research_require_profitable=env_bool(
             "AUTONOMY_RESEARCH_REQUIRE_PROFITABLE", True
         ),
+        autonomy_mutation_enabled=env_bool("AUTONOMY_MUTATION_ENABLED", True),
+        autonomy_mutation_variants=env_int("AUTONOMY_MUTATION_VARIANTS", 160),
+        autonomy_mutation_parent_count=env_int("AUTONOMY_MUTATION_PARENT_COUNT", 8),
         autonomy_ai_strategy_lab_enabled=env_bool(
             "AUTONOMY_AI_STRATEGY_LAB_ENABLED", True
         ),

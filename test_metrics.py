@@ -27,6 +27,9 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
         "AUTONOMY_RESEARCH_SCOUT_SYMBOLS",
         "AUTONOMY_RESEARCH_VALIDATE_TOP_VARIANTS",
         "AUTONOMY_RESEARCH_REQUIRE_PROFITABLE",
+        "AUTONOMY_MUTATION_ENABLED",
+        "AUTONOMY_MUTATION_VARIANTS",
+        "AUTONOMY_MUTATION_PARENT_COUNT",
         "AUTONOMY_AI_STRATEGY_LAB_ENABLED",
         "AUTONOMY_AI_STRATEGY_IDEAS",
         "AGENT_OPERATOR_ENABLED",
@@ -52,6 +55,9 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
     assert settings.autonomy_research_scout_symbols == 60
     assert settings.autonomy_research_validate_top_variants == 50
     assert settings.autonomy_research_require_profitable is True
+    assert settings.autonomy_mutation_enabled is True
+    assert settings.autonomy_mutation_variants == 160
+    assert settings.autonomy_mutation_parent_count == 8
     assert settings.autonomy_ai_strategy_lab_enabled is True
     assert settings.autonomy_ai_strategy_ideas == 48
     assert settings.agent_operator_enabled is True

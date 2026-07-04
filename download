@@ -3,6 +3,7 @@ from evolution import load_evolution_state
 from research import (
     _entry_signal,
     _normalize_ai_strategy,
+    generate_mutation_variants,
     generate_strategy_variants,
     run_research,
 )
@@ -48,7 +49,7 @@ def test_research_backtests_and_deploys_best_strategy(monkeypatch, tmp_path) -> 
     assert result["research"]["variants_tested"] > 0
     assert result["research"]["variants_validated"] <= 10
     assert result["research"]["best_strategy_id"] == state["active_strategy_id"]
-    assert state["active_strategy_id"].startswith("research_")
+    assert state["active_strategy_id"].startswith(("research_", "mut", "ai_"))
     assert state["strategies"][state["active_strategy_id"]]["backtest"]["validation"]["trades"] > 0
     assert len(state["research_history"]) == 1
     assert state["research_history"][0]["lookback_days"] == settings.autonomy_research_lookback_days
@@ -93,6 +94,62 @@ def test_research_variants_cover_multiple_strategy_families() -> None:
         "oversold_reclaim",
         "volatility_runner",
     }
+
+
+def test_mutation_variants_descend_from_recent_research_parent() -> None:
+    parent = {
+        "id": "research_parent_tp40",
+        "label": "Parent strategy",
+        "family": "momentum",
+        "score_bias": 0,
+        "min_entry_score": 40,
+        "take_profit_pct": 0.04,
+        "stop_loss_pct": -0.025,
+        "max_hold_days": 20,
+        "stats": {},
+    }
+    variants = generate_mutation_variants(
+        {
+            "last_research": {
+                "top": [{"strategy": parent, "combined_fitness": -0.001}],
+            },
+            "research_history": [{"researched_at": "now"}],
+            "strategies": {},
+        },
+        max_variants=12,
+        parent_count=1,
+    )
+
+    assert len(variants) == 12
+    assert {variant["source"] for variant in variants} == {"mutation"}
+    assert {variant["parent_strategy_id"] for variant in variants} == {"research_parent_tp40"}
+    assert any(variant["take_profit_pct"] != parent["take_profit_pct"] for variant in variants)
+
+
+def test_mutation_variants_mutate_ai_dsl_rules() -> None:
+    parent = {
+        "id": "ai_parent",
+        "label": "AI parent",
+        "family": "ai_dsl",
+        "score_bias": 0,
+        "min_entry_score": 20,
+        "take_profit_pct": 0.04,
+        "stop_loss_pct": -0.025,
+        "max_hold_days": 20,
+        "entry_logic": "all",
+        "entry_rules": [{"metric": "ret_20d_pct", "op": ">", "value": 3}],
+        "stats": {},
+    }
+
+    variants = generate_mutation_variants(
+        {"last_research": {"top": [{"strategy": parent}]}, "strategies": {}},
+        max_variants=20,
+        parent_count=1,
+    )
+
+    assert variants
+    assert all(variant["entry_rules"] for variant in variants)
+    assert any(variant["entry_rules"][0]["value"] != 3 for variant in variants)
 
 
 def test_ai_strategy_proposal_is_sanitized_into_dsl_strategy() -> None:

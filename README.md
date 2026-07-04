@@ -125,6 +125,9 @@ AUTONOMY_RESEARCH_LOOKBACK_DAYS=1095
 AUTONOMY_RESEARCH_SCOUT_SYMBOLS=60
 AUTONOMY_RESEARCH_VALIDATE_TOP_VARIANTS=50
 AUTONOMY_RESEARCH_REQUIRE_PROFITABLE=true
+AUTONOMY_MUTATION_ENABLED=true
+AUTONOMY_MUTATION_VARIANTS=160
+AUTONOMY_MUTATION_PARENT_COUNT=8
 AUTONOMY_AI_STRATEGY_LAB_ENABLED=true
 AUTONOMY_AI_STRATEGY_IDEAS=48
 AGENT_OPERATOR_ENABLED=true
@@ -158,6 +161,8 @@ By default, each research job selects 250 rotating symbols from the tradable uni
 Research records the best candidate every run, but with `AUTONOMY_RESEARCH_REQUIRE_PROFITABLE=true` it only promotes a strategy into the active paper-trading slot if validation return is positive and it produced enough trades. Losing candidates stay as research evidence instead of becoming the active strategy.
 
 The agent keeps a rolling research history and the autonomous operator checks the research schedule every cycle, even when `AGENT_OPERATOR_ENABLED=true`. With the defaults, it can keep trading every 10 minutes while running a new research cycle when the 6-hour research interval is due.
+
+When `AUTONOMY_MUTATION_ENABLED=true`, each new research cycle also mutates the strongest recent candidates. Mutation changes take-profit, stop-loss, hold duration, score thresholds, score bias, and AI-DSL rule thresholds, then tests those descendants beside fresh AI ideas and coded variants. This lets v4 push on a dead end instead of restarting from zero.
 
 When `AUTONOMY_AI_STRATEGY_LAB_ENABLED=true`, research also asks the model to create thesis-driven strategy candidates as JSON rule data. Those AI-authored candidates are not executable code; they are sanitized into a small DSL, backtested beside the coded variants, and promoted only if they win validation.
 

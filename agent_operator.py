@@ -275,6 +275,7 @@ def summarize_tool_result(result: Dict[str, Any]) -> str:
                 f"and validated {research.get('variants_validated', research.get('variants_tested', 0))} finalists "
                 f"{symbol_text}. "
                 f"AI lab variants {research.get('ai_variants_tested', 0)}. "
+                f"Mutation variants {research.get('mutation_variants_tested', 0)}. "
                 f"{action_text} "
                 f"Validation return {_format_pct(validation.get('total_return_pct'))}, "
                 f"win rate {_format_pct(validation.get('win_rate'))}, "

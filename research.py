@@ -120,6 +120,19 @@ def _strategy_id(params: Dict[str, Any]) -> str:
     )
 
 
+def _mutation_id(parent: Dict[str, Any], params: Dict[str, Any], generation: int) -> str:
+    parent_slug = _slug(parent.get("id") or parent.get("label") or "parent")[:18]
+    family = str(params.get("family", "mutation")).replace("_", "")[:6]
+    return (
+        f"mut{generation}_{parent_slug}_{family}_"
+        f"tp{int(_float(params['take_profit_pct']) * 1000)}_"
+        f"sl{int(abs(_float(params['stop_loss_pct'])) * 1000)}_"
+        f"ms{int(_float(params['min_entry_score']))}_"
+        f"mh{int(_float(params['max_hold_days']))}_"
+        f"sb{int(_float(params['score_bias']))}"
+    )[:120]
+
+
 def _slug(value: Any) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
     return slug[:36] or "idea"
@@ -178,6 +191,131 @@ def generate_strategy_variants(seed_state: Dict[str, Any], max_variants: int = 4
                                 )
                                 if len(variants) >= max_variants:
                                     return variants
+    return variants
+
+
+def _candidate_parents(seed_state: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+    parents: List[Dict[str, Any]] = []
+    seen = set()
+    for row in (seed_state.get("last_research") or {}).get("top") or []:
+        strategy = row.get("strategy") if isinstance(row, dict) else None
+        if not isinstance(strategy, dict):
+            continue
+        strategy_id = strategy.get("id")
+        if strategy_id and strategy_id not in seen:
+            seen.add(strategy_id)
+            parents.append(strategy)
+        if len(parents) >= limit:
+            return parents
+    for strategy in (seed_state.get("strategies") or {}).values():
+        if not isinstance(strategy, dict):
+            continue
+        strategy_id = strategy.get("id")
+        if strategy_id and strategy_id not in seen:
+            seen.add(strategy_id)
+            parents.append(strategy)
+        if len(parents) >= limit:
+            return parents
+    return parents
+
+
+def _mutate_rules(parent: Dict[str, Any], factor: float) -> List[Dict[str, Any]]:
+    rules = []
+    for rule in parent.get("entry_rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        metric = str(rule.get("metric") or "").strip()
+        op = str(rule.get("op") or "").strip()
+        if metric not in DSL_METRICS or op not in DSL_OPERATORS:
+            continue
+        value = _float(rule.get("value"))
+        if metric in {"pos_52w", "volume_ratio", "volatility_20_pct", "score"}:
+            mutated_value = value * factor
+        else:
+            mutated_value = value + ((factor - 1) * max(1.0, abs(value)))
+        rules.append({"metric": metric, "op": op, "value": round(mutated_value, 4)})
+    return rules[:8]
+
+
+def generate_mutation_variants(
+    seed_state: Dict[str, Any],
+    *,
+    max_variants: int,
+    parent_count: int,
+) -> List[Dict[str, Any]]:
+    if max_variants <= 0 or parent_count <= 0:
+        return []
+    variants: List[Dict[str, Any]] = []
+    seen = set()
+    generation = len(seed_state.get("research_history") or []) + 1
+    parents = _candidate_parents(seed_state, parent_count)
+    take_profit_factors = [0.75, 1.0, 1.25, 1.5]
+    stop_loss_factors = [0.75, 1.0, 1.25]
+    score_shifts = [-10, -5, 0, 5, 10]
+    hold_factors = [0.6, 0.85, 1.0, 1.25, 1.6]
+    rule_factors = [0.85, 1.0, 1.15]
+    for parent in parents:
+        for take_factor in take_profit_factors:
+            for stop_factor in stop_loss_factors:
+                for score_shift in score_shifts:
+                    for hold_factor in hold_factors:
+                        for rule_factor in rule_factors:
+                            params = {
+                                "family": parent.get("family", "mutation"),
+                                "score_bias": _clamp(
+                                    _float(parent.get("score_bias")) + score_shift,
+                                    -25,
+                                    25,
+                                    0,
+                                ),
+                                "min_entry_score": _clamp(
+                                    _float(parent.get("min_entry_score")) + score_shift,
+                                    0,
+                                    95,
+                                    20,
+                                ),
+                                "take_profit_pct": _clamp(
+                                    _float(parent.get("take_profit_pct"), 0.04) * take_factor,
+                                    0.005,
+                                    0.18,
+                                    0.04,
+                                ),
+                                "stop_loss_pct": -_clamp(
+                                    abs(_float(parent.get("stop_loss_pct"), -0.025)) * stop_factor,
+                                    0.005,
+                                    0.14,
+                                    0.025,
+                                ),
+                                "max_hold_days": int(
+                                    _clamp(
+                                        _float(parent.get("max_hold_days"), 20) * hold_factor,
+                                        1,
+                                        80,
+                                        20,
+                                    )
+                                ),
+                            }
+                            mutated = {
+                                "label": f"Mutation of {parent.get('label') or parent.get('id')}",
+                                "source": "mutation",
+                                "parent_strategy_id": parent.get("id"),
+                                "mutation_generation": generation,
+                                "thesis": parent.get("thesis"),
+                                "entry_logic": parent.get("entry_logic", "all"),
+                                **params,
+                                "stats": deepcopy(parent.get("stats") or {}),
+                            }
+                            if parent.get("entry_rules"):
+                                mutated["entry_rules"] = _mutate_rules(parent, rule_factor)
+                                if not mutated["entry_rules"]:
+                                    continue
+                            mutated["id"] = _mutation_id(parent, mutated, generation)
+                            if mutated["id"] in seen:
+                                continue
+                            seen.add(mutated["id"])
+                            variants.append(mutated)
+                            if len(variants) >= max_variants:
+                                return variants
     return variants
 
 
@@ -590,14 +728,23 @@ def run_research(
         bars,
         max_variants=settings.autonomy_ai_strategy_ideas,
     )
+    mutation_variants = (
+        generate_mutation_variants(
+            state,
+            max_variants=settings.autonomy_mutation_variants,
+            parent_count=settings.autonomy_mutation_parent_count,
+        )
+        if settings.autonomy_mutation_enabled
+        else []
+    )
     deterministic_variants = generate_strategy_variants(
         state,
         max_variants=max(
             0,
-            settings.autonomy_research_max_variants - len(ai_variants),
+            settings.autonomy_research_max_variants - len(ai_variants) - len(mutation_variants),
         ),
     )
-    variants = ai_variants + deterministic_variants
+    variants = ai_variants + mutation_variants + deterministic_variants
     scout_rows = []
     total_variants = len(variants)
     progress(
@@ -706,6 +853,7 @@ def run_research(
         "scout_symbols": len(scout_train_bars),
         "validation_top_variants": len(finalists),
         "ai_variants_tested": len(ai_variants),
+        "mutation_variants_tested": len(mutation_variants),
         "coded_variants_tested": len(deterministic_variants),
         "best_strategy_id": best_strategy["id"],
         "candidate_strategy_id": best_strategy["id"],
@@ -751,6 +899,7 @@ def run_research(
             "variants_tested": len(variants),
             "variants_validated": len(leaderboard),
             "ai_variants_tested": len(ai_variants),
+            "mutation_variants_tested": len(mutation_variants),
         }
     )
     state["research_history"] = state["research_history"][-50:]
@@ -762,6 +911,7 @@ def run_research(
             f"and validated {len(leaderboard)} finalists on {len(bars)} usable symbols "
             f"({len(symbols)} selected). "
             f"AI lab contributed {len(ai_variants)} thesis-driven variants. "
+            f"Mutation contributed {len(mutation_variants)} descendants. "
             f"{'Deployed' if should_promote else 'Did not deploy'} {best_strategy['id']} "
             f"with validation return {best['validation']['total_return_pct']:.2%}, "
             f"win rate {best['validation']['win_rate']:.1%}, "
