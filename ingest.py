@@ -1,101 +1,107 @@
-import os
-from dataclasses import dataclass
+import csv
+import io
+from pathlib import Path
+from typing import Any, Dict, List
+
+from storage import extract_symbols, pick_score_column, pick_symbol_column
 
 
-def env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def env_float(name: str, default: float) -> float:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
-        return default
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", "").replace("%", "")
+    if not text:
+        return None
     try:
-        return float(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be a number; got {raw!r}") from exc
+        return float(text)
+    except ValueError:
+        return None
 
 
-def normalize_openai_model(raw: str) -> str:
-    model = raw.strip()
-    if not model:
-        return "gpt-5.2"
-    aliases = {
-        "5": "gpt-5",
-        "5.1": "gpt-5.1",
-        "5.2": "gpt-5.2",
-        "mini": "gpt-5-mini",
-        "nano": "gpt-5-nano",
+def parse_csv_bytes(raw: bytes) -> Dict[str, Any]:
+    text = raw.decode("utf-8-sig", errors="replace")
+    sample = text[:4096]
+    try:
+        dialect = csv.Sniffer().sniff(sample) if sample.strip() else csv.excel
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    rows: List[Dict[str, str]] = [dict(row) for row in reader if row]
+    headers = reader.fieldnames or []
+    symbol_col = pick_symbol_column(headers)
+    score_col = pick_score_column(headers)
+
+    candidates = []
+    if symbol_col:
+        for row in rows:
+            symbol = str(row.get(symbol_col, "")).strip().upper()
+            if not symbol:
+                continue
+            candidates.append(
+                {
+                    "symbol": symbol,
+                    "score": _to_float(row.get(score_col)) if score_col else None,
+                    "row": row,
+                }
+            )
+    else:
+        for symbol in extract_symbols(text):
+            candidates.append({"symbol": symbol, "score": None, "row": {}})
+
+    if score_col:
+        candidates.sort(
+            key=lambda item: item["score"] if item["score"] is not None else float("-inf"),
+            reverse=True,
+        )
+
+    return {
+        "kind": "csv",
+        "headers": headers,
+        "row_count": len(rows),
+        "symbol_column": symbol_col,
+        "score_column": score_col,
+        "symbols": [item["symbol"] for item in candidates[:100]],
+        "top_candidates": candidates[:25],
+        "text_preview": text[:2000],
     }
-    return aliases.get(model.lower(), model)
 
 
-@dataclass(frozen=True)
-class Settings:
-    app_name: str
-    admin_token: str
-    alpaca_api_key: str
-    alpaca_secret_key: str
-    alpaca_paper: bool
-    alpaca_trading_base_url: str
-    alpaca_data_base_url: str
-    alpaca_data_feed: str
-    openai_api_key: str
-    openai_model: str
-    data_dir: str
-    default_order_qty: float
-    default_time_in_force: str
-    extended_hours: bool
-    max_upload_bytes: int
+def parse_pdf_bytes(raw: bytes) -> Dict[str, Any]:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise RuntimeError("PDF support requires pypdf") from exc
 
-    @property
-    def alpaca_ready(self) -> bool:
-        return bool(self.alpaca_api_key and self.alpaca_secret_key)
-
-    @property
-    def openai_ready(self) -> bool:
-        return bool(self.openai_api_key)
+    reader = PdfReader(io.BytesIO(raw))
+    page_texts = []
+    for page in reader.pages[:25]:
+        page_texts.append(page.extract_text() or "")
+    text = "\n".join(page_texts)
+    symbols = extract_symbols(text)
+    return {
+        "kind": "pdf",
+        "page_count": len(reader.pages),
+        "symbols": symbols[:100],
+        "top_candidates": [
+            {"symbol": symbol, "score": None, "row": {}} for symbol in symbols[:25]
+        ],
+        "text_preview": text[:3000],
+    }
 
 
-def load_settings() -> Settings:
-    paper = env_bool("ALPACA_PAPER", True)
-    default_base_url = (
-        "https://paper-api.alpaca.markets"
-        if paper
-        else "https://api.alpaca.markets"
-    )
-    return Settings(
-        app_name=os.getenv("APP_NAME", "v4-agentic-trader").strip()
-        or "v4-agentic-trader",
-        admin_token=os.getenv("ADMIN_TOKEN", "").strip(),
-        alpaca_api_key=(
-            os.getenv("ALPACA_API_KEY")
-            or os.getenv("APCA_API_KEY_ID")
-            or ""
-        ).strip(),
-        alpaca_secret_key=(
-            os.getenv("ALPACA_SECRET_KEY")
-            or os.getenv("APCA_API_SECRET_KEY")
-            or ""
-        ).strip(),
-        alpaca_paper=paper,
-        alpaca_trading_base_url=os.getenv(
-            "ALPACA_TRADING_BASE_URL", default_base_url
-        ).strip(),
-        alpaca_data_base_url=os.getenv(
-            "ALPACA_DATA_BASE_URL", "https://data.alpaca.markets"
-        ).strip(),
-        alpaca_data_feed=os.getenv("ALPACA_DATA_FEED", "iex").strip().lower()
-        or "iex",
-        openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
-        openai_model=normalize_openai_model(os.getenv("OPENAI_MODEL", "gpt-5.2")),
-        data_dir=os.getenv("DATA_DIR", "./data").strip() or "./data",
-        default_order_qty=env_float("DEFAULT_ORDER_QTY", 1.0),
-        default_time_in_force=os.getenv("DEFAULT_TIME_IN_FORCE", "day").strip().lower()
-        or "day",
-        extended_hours=env_bool("EXTENDED_HOURS", False),
-        max_upload_bytes=int(env_float("MAX_UPLOAD_MB", 10) * 1024 * 1024),
-    )
+def parse_upload(filename: str, raw: bytes, content_type: str = "") -> Dict[str, Any]:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".csv" or "csv" in content_type:
+        return parse_csv_bytes(raw)
+    if suffix == ".pdf" or "pdf" in content_type:
+        return parse_pdf_bytes(raw)
+    text = raw.decode("utf-8", errors="replace")
+    symbols = extract_symbols(text)
+    return {
+        "kind": "text",
+        "symbols": symbols[:100],
+        "top_candidates": [
+            {"symbol": symbol, "score": None, "row": {}} for symbol in symbols[:25]
+        ],
+        "text_preview": text[:3000],
+    }
