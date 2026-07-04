@@ -43,3 +43,13 @@ def test_build_metrics_shape() -> None:
     assert metrics["charts"]["equity"]
     assert metrics["charts"]["drawdown"][-1]["drawdown"] < 0
     assert "Equity" == metrics["tiles"][0]["label"]
+
+
+def test_projection_requires_enough_history() -> None:
+    class ShortHistoryAlpaca(FakeAlpaca):
+        def portfolio_history(self):
+            return {"timestamp": [1000], "equity": [1000], "profit_loss": [0]}
+
+    metrics = build_metrics(ShortHistoryAlpaca())
+    assert metrics["charts"]["projected_equity"] == []
+    assert "hidden" in metrics["notes"]["projection"]

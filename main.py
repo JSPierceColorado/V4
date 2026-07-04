@@ -379,6 +379,12 @@ CHAT_HTML = """
     function lineChart(title, points, key) {
       const width = 420, height = 160, pad = 22;
       const values = numericValues(points, key);
+      if (!values.length) {
+        return `<div class="chart-card"><div class="chart-title">${title}</div>
+          <svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${title}">
+            <text x="${width/2}" y="${height/2}" text-anchor="middle" font-size="14" fill="#8b9096">Not enough history yet</text>
+          </svg></div>`;
+      }
       const min = values.length ? Math.min(...values) : 0;
       const max = values.length ? Math.max(...values) : 0;
       return `<div class="chart-card"><div class="chart-title">${title}</div>
@@ -393,6 +399,12 @@ CHAT_HTML = """
     function barChart(title, points, key) {
       const width = 420, height = 160, pad = 22;
       const values = numericValues(points, key);
+      if (!values.length) {
+        return `<div class="chart-card"><div class="chart-title">${title}</div>
+          <svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${title}">
+            <text x="${width/2}" y="${height/2}" text-anchor="middle" font-size="14" fill="#8b9096">No data yet</text>
+          </svg></div>`;
+      }
       const maxAbs = Math.max(...values.map((v) => Math.abs(v)), 1);
       const zeroY = height / 2;
       const barW = Math.max(4, (width - pad * 2) / Math.max(points.length, 1) - 3);
@@ -426,6 +438,7 @@ CHAT_HTML = """
           <span>${metrics.generated_at || ""}</span>
         </div>
         <div>${metrics.summary || ""}</div>
+        <div class="small" style="margin:8px 0 14px">${metrics.notes?.projection || ""}</div>
         <div class="metric-grid">${tiles}</div>
         <div class="chart-grid">
           ${lineChart("Equity Trend", charts.equity || [], "equity")}

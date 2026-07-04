@@ -67,7 +67,7 @@ def _drawdown_points(equity_points: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 
 def _projected_points(equity_points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    if not equity_points:
+    if len(equity_points) < 5:
         return []
     latest = _float(equity_points[-1].get("equity"))
     recent = equity_points[-7:] if len(equity_points) >= 7 else equity_points
@@ -75,6 +75,8 @@ def _projected_points(equity_points: List[Dict[str, Any]]) -> List[Dict[str, Any
         slope = (_float(recent[-1]["equity"]) - _float(recent[0]["equity"])) / (len(recent) - 1)
     else:
         slope = 0.0
+    if abs(slope) < 0.01:
+        return []
     return [
         {"label": "Now", "equity": latest},
         {"label": "+7d", "equity": latest + slope * 7},
@@ -160,6 +162,13 @@ def build_metrics(alpaca: AlpacaRest) -> Dict[str, Any]:
             f"Open unrealized {_money(open_unrealized)} across {len(positions)} positions. "
             f"Exposure {_pct(exposure_pct)}."
         ),
+        "notes": {
+            "projection": (
+                "Projection is hidden until the account has enough non-flat equity history."
+                if not _projected_points(equity_points)
+                else "Projection is a simple recent-equity run-rate estimate."
+            )
+        },
         "tiles": tiles,
         "charts": {
             "equity": equity_points,
