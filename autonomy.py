@@ -194,6 +194,18 @@ class AutonomyEngine:
             self.snapshot.last_started_at = started
             self.snapshot.last_error = None
 
+        results = []
+        if self.settings.autonomy_research_enabled:
+            scheduled_research = self.maybe_run_research(alpaca)
+            if not scheduled_research.get("skipped"):
+                results.append(
+                    {
+                        "tool": "research",
+                        "reason": "scheduled periodic research",
+                        **scheduled_research,
+                    }
+                )
+
         state = alpaca.state()
         context = build_operator_context(
             self.settings,
@@ -201,7 +213,6 @@ class AutonomyEngine:
             autonomy_status=self.status(),
         )
         plan = model_plan(self.settings, context)
-        results = []
         for action in plan.get("actions") or []:
             tool = action.get("tool")
             try:

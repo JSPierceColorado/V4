@@ -50,6 +50,8 @@ def test_research_backtests_and_deploys_best_strategy(monkeypatch, tmp_path) -> 
     assert result["research"]["best_strategy_id"] == state["active_strategy_id"]
     assert state["active_strategy_id"].startswith("research_")
     assert state["strategies"][state["active_strategy_id"]]["backtest"]["validation"]["trades"] > 0
+    assert len(state["research_history"]) == 1
+    assert state["research_history"][0]["lookback_days"] == settings.autonomy_research_lookback_days
 
 
 def test_research_does_not_promote_unprofitable_candidate(monkeypatch, tmp_path) -> None:

@@ -506,8 +506,11 @@ def _select_symbols(settings: Settings, alpaca: AlpacaRest, state: Dict[str, Any
     return selected
 
 
-def _fetch_bars(alpaca: AlpacaRest, symbols: List[str]) -> Dict[str, Any]:
-    start = (datetime.now(timezone.utc) - timedelta(days=390)).date().isoformat()
+def _fetch_bars(alpaca: AlpacaRest, symbols: List[str], lookback_days: int) -> Dict[str, Any]:
+    start = (
+        datetime.now(timezone.utc)
+        - timedelta(days=max(90, lookback_days))
+    ).date().isoformat()
     merged: Dict[str, Any] = {}
     for chunk in _chunks(symbols, 50):
         response = alpaca.stock_bars(chunk, start=start)
@@ -556,7 +559,7 @@ def run_research(
                 "selected_symbols": len(symbols),
             }
         )
-        bars = _fetch_bars(alpaca, symbols)
+        bars = _fetch_bars(alpaca, symbols, settings.autonomy_research_lookback_days)
     except AlpacaError as exc:
         if "429" not in str(exc) and "too many requests" not in str(exc).lower():
             raise
@@ -697,6 +700,7 @@ def run_research(
         "symbols": symbols,
         "selected_symbols_count": len(symbols),
         "bars_symbols": len(bars),
+        "lookback_days": settings.autonomy_research_lookback_days,
         "variants_tested": len(variants),
         "variants_validated": len(leaderboard),
         "scout_symbols": len(scout_train_bars),
@@ -733,6 +737,23 @@ def run_research(
             )
         },
     }
+    state.setdefault("research_history", []).append(
+        {
+            "researched_at": state["last_research"]["researched_at"],
+            "candidate_strategy_id": best_strategy["id"],
+            "promoted": should_promote,
+            "promoted_strategy_id": best_strategy["id"] if should_promote else None,
+            "validation": best["validation"],
+            "combined_fitness": best["combined_fitness"],
+            "symbols_selected": len(symbols),
+            "symbols_usable": len(bars),
+            "lookback_days": settings.autonomy_research_lookback_days,
+            "variants_tested": len(variants),
+            "variants_validated": len(leaderboard),
+            "ai_variants_tested": len(ai_variants),
+        }
+    )
+    state["research_history"] = state["research_history"][-50:]
     save_evolution_state(settings.data_dir, state)
     return {
         "ok": True,

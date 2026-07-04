@@ -138,6 +138,7 @@ def build_operator_context(
         "autonomy_status": _compact_autonomy_status(autonomy_status),
         "strategy": strategy_snapshot(evolution_state),
         "last_research": evolution_state.get("last_research"),
+        "research_history": (evolution_state.get("research_history") or [])[-10:],
         "recent_events": load_events(settings.data_dir, limit=12),
     }
 

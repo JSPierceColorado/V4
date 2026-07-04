@@ -86,6 +86,7 @@ class Settings:
     autonomy_research_interval_seconds: int
     autonomy_research_symbols_per_run: int
     autonomy_research_max_variants: int
+    autonomy_research_lookback_days: int
     autonomy_research_scout_symbols: int
     autonomy_research_validate_top_variants: int
     autonomy_research_require_profitable: bool
@@ -162,6 +163,9 @@ def load_settings() -> Settings:
         ),
         autonomy_research_max_variants=env_int(
             "AUTONOMY_RESEARCH_MAX_VARIANTS", 1000
+        ),
+        autonomy_research_lookback_days=env_int(
+            "AUTONOMY_RESEARCH_LOOKBACK_DAYS", 1095
         ),
         autonomy_research_scout_symbols=env_int(
             "AUTONOMY_RESEARCH_SCOUT_SYMBOLS", 60
