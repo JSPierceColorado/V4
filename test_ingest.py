@@ -125,6 +125,6 @@ def test_operator_summary_shows_research_backtest_result() -> None:
         }
     )
 
-    assert "tested 48 variants on 25 symbols" in summary
+    assert "scouted 48 variants and validated 48 finalists on 25 symbols" in summary
     assert "Validation return +3.20%" in summary
     assert "win rate +58.00%" in summary

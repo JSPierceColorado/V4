@@ -5,7 +5,7 @@ import re
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from statistics import mean, pstdev
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Tuple
 
 from alpaca_rest import AlpacaError, AlpacaRest
 from config import Settings
@@ -515,8 +515,31 @@ def _fetch_bars(alpaca: AlpacaRest, symbols: List[str]) -> Dict[str, Any]:
     return merged
 
 
-def run_research(settings: Settings, alpaca: AlpacaRest) -> Dict[str, Any]:
+def _subset_bars(bars_by_symbol: Dict[str, Any], limit: int) -> Dict[str, Any]:
+    if limit <= 0:
+        return dict(bars_by_symbol)
+    return {
+        symbol: bars
+        for symbol, bars in list(bars_by_symbol.items())[:limit]
+    }
+
+
+def run_research(
+    settings: Settings,
+    alpaca: AlpacaRest,
+    progress_callback: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    def progress(update: Dict[str, Any]) -> None:
+        if progress_callback:
+            progress_callback(update)
+
     state = load_evolution_state(settings.data_dir)
+    progress(
+        {
+            "stage": "selecting_symbols",
+            "message": "Selecting rotating research universe.",
+        }
+    )
     symbols = _select_symbols(
         settings,
         alpaca,
@@ -526,6 +549,13 @@ def run_research(settings: Settings, alpaca: AlpacaRest) -> Dict[str, Any]:
     if not symbols:
         return {"ok": False, "reply": "No symbols were available for research."}
     try:
+        progress(
+            {
+                "stage": "fetching_bars",
+                "message": f"Fetching historical bars for {len(symbols)} selected symbols.",
+                "selected_symbols": len(symbols),
+            }
+        )
         bars = _fetch_bars(alpaca, symbols)
     except AlpacaError as exc:
         if "429" not in str(exc) and "too many requests" not in str(exc).lower():
@@ -540,6 +570,17 @@ def run_research(settings: Settings, alpaca: AlpacaRest) -> Dict[str, Any]:
         }
 
     train_bars, test_bars = _split_bars(bars)
+    scout_train_bars = _subset_bars(train_bars, settings.autonomy_research_scout_symbols)
+    progress(
+        {
+            "stage": "generating_variants",
+            "message": "Generating AI lab and coded strategy variants.",
+            "usable_symbols": len(bars),
+            "train_symbols": len(train_bars),
+            "validation_symbols": len(test_bars),
+            "scout_symbols": len(scout_train_bars),
+        }
+    )
     ai_variants = generate_ai_strategy_variants(
         settings,
         state,
@@ -554,25 +595,81 @@ def run_research(settings: Settings, alpaca: AlpacaRest) -> Dict[str, Any]:
         ),
     )
     variants = ai_variants + deterministic_variants
+    scout_rows = []
+    total_variants = len(variants)
+    progress(
+        {
+            "stage": "scouting",
+            "message": f"Scouting {total_variants} variants on {len(scout_train_bars)} symbols.",
+            "variants_total": total_variants,
+            "variants_completed": 0,
+        }
+    )
+    for index, strategy in enumerate(variants, start=1):
+        scout = _simulate_strategy_on_bars(strategy, scout_train_bars)
+        scout_rows.append(
+            {
+                "strategy": strategy,
+                "scout": scout,
+                "scout_fitness": scout["fitness"],
+            }
+        )
+        if index == total_variants or index % 25 == 0:
+            progress(
+                {
+                    "stage": "scouting",
+                    "message": f"Scouted {index}/{total_variants} variants.",
+                    "variants_total": total_variants,
+                    "variants_completed": index,
+                }
+            )
+    scout_rows.sort(key=lambda row: row["scout_fitness"], reverse=True)
+    validation_limit = max(1, settings.autonomy_research_validate_top_variants)
+    finalists = scout_rows[:validation_limit]
     leaderboard = []
-    for strategy in variants:
+    progress(
+        {
+            "stage": "validating",
+            "message": f"Validating top {len(finalists)} variants on full train/test split.",
+            "variants_total": len(finalists),
+            "variants_completed": 0,
+        }
+    )
+    for index, row in enumerate(finalists, start=1):
+        strategy = row["strategy"]
         train = _simulate_strategy_on_bars(strategy, train_bars)
         validation = _simulate_strategy_on_bars(strategy, test_bars)
         combined_fitness = round(train["fitness"] * 0.35 + validation["fitness"] * 0.65, 6)
         leaderboard.append(
             {
                 "strategy": strategy,
+                "scout": row["scout"],
                 "train": train,
                 "validation": validation,
                 "combined_fitness": combined_fitness,
                 "profitable": validation["total_return_pct"] > 0 and validation["trades"] >= 3,
             }
         )
+        if index == len(finalists) or index % 5 == 0:
+            progress(
+                {
+                    "stage": "validating",
+                    "message": f"Validated {index}/{len(finalists)} finalist variants.",
+                    "variants_total": len(finalists),
+                    "variants_completed": index,
+                }
+            )
     leaderboard.sort(key=lambda row: row["combined_fitness"], reverse=True)
     best = leaderboard[0] if leaderboard else None
     if not best:
         return {"ok": False, "reply": "Research did not produce any strategy variants."}
 
+    progress(
+        {
+            "stage": "promoting",
+            "message": f"Promoting best strategy {best['strategy']['id']}.",
+        }
+    )
     best_strategy = deepcopy(best["strategy"])
     best_strategy["backtest"] = {
         "researched_at": utc_now(),
@@ -590,7 +687,10 @@ def run_research(settings: Settings, alpaca: AlpacaRest) -> Dict[str, Any]:
         "symbols": symbols,
         "selected_symbols_count": len(symbols),
         "bars_symbols": len(bars),
-        "variants_tested": len(leaderboard),
+        "variants_tested": len(variants),
+        "variants_validated": len(leaderboard),
+        "scout_symbols": len(scout_train_bars),
+        "validation_top_variants": len(finalists),
         "ai_variants_tested": len(ai_variants),
         "coded_variants_tested": len(deterministic_variants),
         "best_strategy_id": best_strategy["id"],
@@ -615,7 +715,8 @@ def run_research(settings: Settings, alpaca: AlpacaRest) -> Dict[str, Any]:
     return {
         "ok": True,
         "reply": (
-            f"Research tested {len(leaderboard)} variants on {len(bars)} usable symbols "
+            f"Research scouted {len(variants)} variants on {len(scout_train_bars)} scout symbols "
+            f"and validated {len(leaderboard)} finalists on {len(bars)} usable symbols "
             f"({len(symbols)} selected). "
             f"AI lab contributed {len(ai_variants)} thesis-driven variants. "
             f"Deployed {best_strategy['id']} with validation return "

@@ -23,6 +23,8 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
         "AUTONOMY_RESEARCH_INTERVAL_SECONDS",
         "AUTONOMY_RESEARCH_SYMBOLS_PER_RUN",
         "AUTONOMY_RESEARCH_MAX_VARIANTS",
+        "AUTONOMY_RESEARCH_SCOUT_SYMBOLS",
+        "AUTONOMY_RESEARCH_VALIDATE_TOP_VARIANTS",
         "AUTONOMY_AI_STRATEGY_LAB_ENABLED",
         "AUTONOMY_AI_STRATEGY_IDEAS",
         "AGENT_OPERATOR_ENABLED",
@@ -44,6 +46,8 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
     assert settings.autonomy_research_interval_seconds == 21600
     assert settings.autonomy_research_symbols_per_run == 250
     assert settings.autonomy_research_max_variants == 1000
+    assert settings.autonomy_research_scout_symbols == 60
+    assert settings.autonomy_research_validate_top_variants == 50
     assert settings.autonomy_ai_strategy_lab_enabled is True
     assert settings.autonomy_ai_strategy_ideas == 48
     assert settings.agent_operator_enabled is True

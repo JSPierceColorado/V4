@@ -41,6 +41,7 @@ class ResearchJobManager:
             "job_id": None,
             "started_at": None,
             "finished_at": None,
+            "progress": None,
             "result": None,
             "error": None,
         }
@@ -59,6 +60,11 @@ class ResearchJobManager:
                 "job_id": job_id,
                 "started_at": job_id,
                 "finished_at": None,
+                "progress": {
+                    "stage": "queued",
+                    "message": "Research job queued.",
+                    "updated_at": job_id,
+                },
                 "result": None,
                 "error": None,
             }
@@ -85,11 +91,24 @@ class ResearchJobManager:
     def _run(self) -> None:
         try:
             client = alpaca()
-            result = run_research(settings, client)
+
+            def progress(update: Dict[str, Any]) -> None:
+                with self._lock:
+                    self._status["progress"] = {
+                        "updated_at": utc_now(),
+                        **update,
+                    }
+
+            result = run_research(settings, client, progress_callback=progress)
             append_event(settings.data_dir, "research", result)
             with self._lock:
                 self._status["running"] = False
                 self._status["finished_at"] = utc_now()
+                self._status["progress"] = {
+                    "stage": "completed",
+                    "message": result.get("reply") or "Research completed.",
+                    "updated_at": self._status["finished_at"],
+                }
                 self._status["result"] = result
                 self._status["error"] = None
         except Exception as exc:
@@ -98,6 +117,11 @@ class ResearchJobManager:
             with self._lock:
                 self._status["running"] = False
                 self._status["finished_at"] = utc_now()
+                self._status["progress"] = {
+                    "stage": "failed",
+                    "message": error,
+                    "updated_at": self._status["finished_at"],
+                }
                 self._status["result"] = None
                 self._status["error"] = error
 
@@ -919,11 +943,13 @@ def research() -> Dict[str, Any]:
 @app.get("/research/status", dependencies=[Depends(require_auth)])
 def research_status() -> Dict[str, Any]:
     status = research_jobs.status()
+    progress = status.get("progress") or {}
+    progress_text = progress.get("message") or progress.get("stage") or "No progress update yet."
     if status.get("running"):
         reply = (
             "Research is still running. "
             f"Started at {status.get('started_at')}. "
-            "This can take several minutes on Railway when the lab is cranked up."
+            f"{progress_text}"
         )
     elif status.get("error"):
         reply = f"Research failed: {status.get('error')}"

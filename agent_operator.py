@@ -264,7 +264,8 @@ def summarize_tool_result(result: Dict[str, Any]) -> str:
                 else f"on {bars_symbols} symbols"
             )
             return (
-                f"research: tested {research.get('variants_tested', 0)} variants "
+                f"research: scouted {research.get('variants_tested', 0)} variants "
+                f"and validated {research.get('variants_validated', research.get('variants_tested', 0))} finalists "
                 f"{symbol_text}. "
                 f"AI lab variants {research.get('ai_variants_tested', 0)}. "
                 f"Deployed {strategy_id}. "

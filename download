@@ -1,5 +1,107 @@
-__pycache__/
-.pytest_cache/
-*.pyc
-.env
-data/
+from config import load_settings
+from evolution import load_evolution_state
+from research import (
+    _entry_signal,
+    _normalize_ai_strategy,
+    generate_strategy_variants,
+    run_research,
+)
+
+
+def _bars(count: int = 180):
+    bars = []
+    price = 10.0
+    for index in range(count):
+        price *= 1.004
+        bars.append({"c": round(price, 4), "v": 500000 + index * 1000})
+    return bars
+
+
+def test_research_backtests_and_deploys_best_strategy(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AUTONOMY_RESEARCH_SYMBOLS_PER_RUN", "10")
+    monkeypatch.setenv("AUTONOMY_RESEARCH_MAX_VARIANTS", "80")
+    monkeypatch.setenv("AUTONOMY_RESEARCH_SCOUT_SYMBOLS", "2")
+    monkeypatch.setenv("AUTONOMY_RESEARCH_VALIDATE_TOP_VARIANTS", "10")
+    settings = load_settings()
+
+    class FakeAlpaca:
+        def active_tradable_us_equity_symbols(self):
+            return ["AAA", "BBB", "CCC"]
+
+        def stock_bars(self, symbols, *, start):
+            return {"bars": {symbol: _bars() for symbol in symbols}}
+
+    result = run_research(settings, FakeAlpaca())
+    state = load_evolution_state(settings.data_dir)
+
+    assert result["ok"] is True
+    assert result["research"]["variants_tested"] > 0
+    assert result["research"]["variants_validated"] <= 10
+    assert result["research"]["best_strategy_id"] == state["active_strategy_id"]
+    assert state["active_strategy_id"].startswith("research_")
+    assert state["strategies"][state["active_strategy_id"]]["backtest"]["validation"]["trades"] > 0
+
+
+def test_research_variants_cover_multiple_strategy_families() -> None:
+    variants = generate_strategy_variants({"strategies": {}}, max_variants=80)
+    families = {variant["family"] for variant in variants}
+
+    assert families == {
+        "momentum",
+        "breakout",
+        "volume_momentum",
+        "trend_pullback",
+        "dip_buy",
+        "mean_reversion",
+        "oversold_reclaim",
+        "volatility_runner",
+    }
+
+
+def test_ai_strategy_proposal_is_sanitized_into_dsl_strategy() -> None:
+    strategy = _normalize_ai_strategy(
+        {
+            "name": "Reclaim strength test",
+            "thesis": "Buy symbols recovering from a short dip while longer-term trend is intact.",
+            "entry_logic": "all",
+            "entry_rules": [
+                {"metric": "ret_5d_pct", "op": "<", "value": -1},
+                {"metric": "close", "op": ">", "value": 10},
+                {"metric": "bad_metric", "op": ">", "value": 0},
+            ],
+            "take_profit_pct": 0.3,
+            "stop_loss_pct": -0.3,
+            "max_hold_days": 200,
+            "min_entry_score": 999,
+        },
+        1,
+    )
+
+    assert strategy is not None
+    assert strategy["source"] == "ai_strategy_lab"
+    assert strategy["family"] == "ai_dsl"
+    assert strategy["take_profit_pct"] == 0.15
+    assert strategy["stop_loss_pct"] == -0.12
+    assert strategy["max_hold_days"] == 60
+    assert strategy["min_entry_score"] == 90
+    assert len(strategy["entry_rules"]) == 2
+
+
+def test_dsl_entry_signal_evaluates_ai_rules() -> None:
+    closes = [10.0] * 80 + [9.8, 9.7, 9.6, 9.5, 9.4, 10.2]
+    volumes = [100000.0] * len(closes)
+    strategy = {
+        "score_bias": 0,
+        "min_entry_score": 0,
+        "entry_logic": "all",
+        "entry_rules": [
+            {"metric": "ret_5d_pct", "op": ">", "value": 1},
+            {"metric": "close", "op": ">", "value": 10},
+        ],
+    }
+
+    should_enter, score = _entry_signal(strategy, closes, volumes, len(closes) - 1)
+
+    assert should_enter is True
+    assert score >= 0
