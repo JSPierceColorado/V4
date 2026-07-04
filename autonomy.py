@@ -59,6 +59,26 @@ def _seconds_since(timestamp: Any) -> float:
         return 10**12
 
 
+def _market_clock(alpaca: AlpacaRest, state: Dict[str, Any]) -> Dict[str, Any]:
+    clock = state.get("clock")
+    if isinstance(clock, dict):
+        return clock
+    if not hasattr(alpaca, "clock"):
+        return {"is_open": True, "source": "test_default"}
+    try:
+        return alpaca.clock()
+    except AlpacaError as exc:
+        return {
+            "is_open": False,
+            "error": str(exc),
+            "source": "clock_error",
+        }
+
+
+def _is_market_open(clock: Dict[str, Any]) -> bool:
+    return bool(clock.get("is_open") is True)
+
+
 @dataclass
 class AutonomySnapshot:
     running: bool
@@ -206,6 +226,8 @@ class AutonomyEngine:
 
         state = alpaca.state()
         account = state.get("account") or {}
+        clock = _market_clock(alpaca, state)
+        market_open = _is_market_open(clock)
         positions = state.get("positions") or []
         open_orders = state.get("open_orders") or []
         evolution_state = load_evolution_state(self.settings.data_dir)
@@ -265,11 +287,14 @@ class AutonomyEngine:
                 "reason": reason,
                 "plpc": plpc,
                 "age_days": round(age_days, 2),
+                "market_open": market_open,
                 "position": position,
                 "order_args": order_args,
                 "dry_run": self.settings.autonomy_dry_run,
             }
-            if not self.settings.autonomy_dry_run:
+            if not market_open:
+                action["skipped"] = "market_closed"
+            elif not self.settings.autonomy_dry_run:
                 try:
                     action["order"] = alpaca.place_order(**order_args)
                     action["exit_record"] = tag_exit(
@@ -304,7 +329,7 @@ class AutonomyEngine:
             reverse=True,
         )
         entry_actions = []
-        for candidate in candidates:
+        for candidate in ([] if not market_open else candidates):
             if len(entry_actions) >= order_slots:
                 break
             symbol = candidate["symbol"]
@@ -333,6 +358,7 @@ class AutonomyEngine:
                 "strategy": strategy,
                 "candidate": candidate,
                 "adjusted_score": adjusted_score(candidate, strategy),
+                "market_open": market_open,
                 "order_args": order_args,
                 "dry_run": self.settings.autonomy_dry_run,
             }
@@ -363,8 +389,10 @@ class AutonomyEngine:
                 f"found {len(screen.get('candidates', []))} candidates, "
                 f"prepared {len(exit_actions)} exit(s) and "
                 f"{len(entry_actions)} entry action(s). "
+                f"Market open: {market_open}. "
                 f"Dry run: {self.settings.autonomy_dry_run}."
             ),
+            "market_clock": clock,
             "screen": screen,
             "strategy": strategy_report,
             "actions": actions,

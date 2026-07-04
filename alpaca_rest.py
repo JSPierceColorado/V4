@@ -69,6 +69,9 @@ class AlpacaRest:
     def account(self) -> Dict[str, Any]:
         return self.trading("GET", "/v2/account")
 
+    def clock(self) -> Dict[str, Any]:
+        return self.trading("GET", "/v2/clock")
+
     def positions(self) -> Any:
         return self.trading("GET", "/v2/positions")
 
@@ -96,6 +99,7 @@ class AlpacaRest:
     def state(self) -> Dict[str, Any]:
         return {
             "account": self.account(),
+            "clock": self.clock(),
             "positions": self.positions(),
             "open_orders": self.open_orders(),
         }

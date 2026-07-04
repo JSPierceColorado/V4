@@ -285,3 +285,59 @@ def test_autonomy_sells_position_at_take_profit(monkeypatch, tmp_path) -> None:
     ]
     assert result["actions"][0]["type"] == "paper_sell_exit"
     assert result["actions"][0]["reason"] == "take_profit"
+
+
+def test_autonomy_skips_orders_when_market_is_closed(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    engine = AutonomyEngine(settings)
+    placed_orders = []
+
+    class FakeAlpaca:
+        def state(self):
+            return {
+                "account": {"buying_power": "1000"},
+                "clock": {
+                    "is_open": False,
+                    "next_open": "2026-07-06T13:30:00Z",
+                    "next_close": "2026-07-06T20:00:00Z",
+                },
+                "positions": [
+                    {
+                        "symbol": "WIN",
+                        "qty": "0.5",
+                        "unrealized_plpc": "0.05",
+                    }
+                ],
+                "open_orders": [],
+            }
+
+        def place_order(self, **kwargs):
+            placed_orders.append(kwargs)
+            return {"id": "should-not-happen", **kwargs}
+
+    monkeypatch.setattr(
+        autonomy,
+        "screen_symbols",
+        lambda alpaca, symbols, **kwargs: {
+            "ok": True,
+            "symbols_checked": 1,
+            "rejected": 0,
+            "candidates": [
+                {
+                    "symbol": "HIGH",
+                    "close": 410.24,
+                    "score": 99,
+                }
+            ],
+        },
+    )
+
+    result = engine.run_cycle(FakeAlpaca())
+
+    assert result["ok"] is True
+    assert result["market_clock"]["is_open"] is False
+    assert placed_orders == []
+    assert result["actions"][0]["type"] == "paper_sell_exit"
+    assert result["actions"][0]["skipped"] == "market_closed"
+    assert "Market open: False" in result["summary"]

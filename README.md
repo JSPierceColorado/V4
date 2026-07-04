@@ -125,6 +125,7 @@ Ask in chat:
 
 ```text
 screen the market
+is the market open?
 run one autonomous cycle
 start autonomy
 stop autonomy

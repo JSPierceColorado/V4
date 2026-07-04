@@ -630,6 +630,15 @@ def summarize_order(raw: Dict[str, Any]) -> str:
     ).strip()
 
 
+def summarize_clock(raw: Dict[str, Any]) -> str:
+    is_open = raw.get("is_open")
+    next_open = raw.get("next_open", "unknown")
+    next_close = raw.get("next_close", "unknown")
+    if is_open:
+        return f"Market is open. Next close: {next_close}."
+    return f"Market is closed. Next open: {next_open}."
+
+
 @app.get("/", include_in_schema=False)
 def root() -> RedirectResponse:
     return RedirectResponse(url="/chat")
@@ -660,6 +669,14 @@ def state() -> Dict[str, Any]:
     result = api_result(client.state)
     append_event(settings.data_dir, "state", {"ok": True})
     return result
+
+
+@app.get("/clock", dependencies=[Depends(require_auth)])
+def clock() -> Dict[str, Any]:
+    client = alpaca()
+    result = api_result(client.clock)
+    append_event(settings.data_dir, "clock", {"ok": True, "clock": result})
+    return {"ok": True, "reply": summarize_clock(result), "clock": result}
 
 
 @app.get("/uploads", dependencies=[Depends(require_auth)])
@@ -831,6 +848,8 @@ def query(req: QueryRequest) -> Dict[str, Any]:
     if action == "state":
         raw_state = state()
         result = {"ok": True, "reply": summarize_state(raw_state), "state": raw_state}
+    elif action == "clock":
+        result = clock()
     elif action == "metrics":
         result = metrics()
     elif action == "screen":

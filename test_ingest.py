@@ -42,6 +42,11 @@ def test_rule_parse_research() -> None:
     assert parsed["action"] == "research"
 
 
+def test_rule_parse_market_clock() -> None:
+    parsed = rule_parse("is the market open?")
+    assert parsed["action"] == "clock"
+
+
 def test_normalize_openai_model_aliases() -> None:
     assert normalize_openai_model("5.1") == "gpt-5.1"
     assert normalize_openai_model("5.2") == "gpt-5.2"
