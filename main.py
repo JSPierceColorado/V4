@@ -928,11 +928,16 @@ def agent_cycle() -> Dict[str, Any]:
 def research() -> Dict[str, Any]:
     job = research_jobs.start()
     status = job["status"]
+    symbol_scope = (
+        "the full trading universe"
+        if settings.autonomy_research_symbols_per_run <= 0
+        else f"{settings.autonomy_research_symbols_per_run} selected symbols"
+    )
     if job["started"]:
         reply = (
             "Research started in the background. "
             f"Testing up to {settings.autonomy_research_max_variants} variants "
-            f"on {settings.autonomy_research_symbols_per_run} selected symbols, "
+            f"on {symbol_scope}, "
             f"using up to {settings.autonomy_research_lookback_days} days of history, "
             f"AI-triaged toward {settings.autonomy_ai_variant_triage_target} scout candidates, "
             f"including up to {settings.autonomy_ai_strategy_ideas} AI lab ideas. "

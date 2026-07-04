@@ -790,6 +790,9 @@ def _select_symbols(settings: Settings, alpaca: AlpacaRest, state: Dict[str, Any
         universe = alpaca.active_tradable_us_equity_symbols()
     if not universe:
         return []
+    if limit <= 0 or limit >= len(universe):
+        state["research_offset"] = 0
+        return universe
     offset = int(state.get("research_offset") or 0) % len(universe)
     rotated = universe[offset:] + universe[:offset]
     selected = rotated[:limit]
@@ -831,7 +834,11 @@ def run_research(
     progress(
         {
             "stage": "selecting_symbols",
-            "message": "Selecting rotating research universe.",
+            "message": (
+                "Selecting full research universe."
+                if settings.autonomy_research_symbols_per_run <= 0
+                else "Selecting rotating research universe."
+            ),
         }
     )
     symbols = _select_symbols(
@@ -846,7 +853,7 @@ def run_research(
         progress(
             {
                 "stage": "fetching_bars",
-                "message": f"Fetching historical bars for {len(symbols)} selected symbols.",
+                "message": f"Fetching historical bars for {len(symbols)} research symbols.",
                 "selected_symbols": len(symbols),
             }
         )

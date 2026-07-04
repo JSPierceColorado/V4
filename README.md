@@ -109,6 +109,8 @@ The metrics view includes compact KPI tiles plus charts for equity trend, drawdo
 
 The autonomous loop screens symbols, manages exits, evolves the active strategy, and places paper orders. Blank `AUTONOMY_SYMBOLS` means all active tradable US equities. To avoid Alpaca rate limits, v4 rotates through the full universe in batches each cycle. Zero order/position caps mean unlimited. New entries default to 2% of Alpaca `buying_power`, which includes margin buying power.
 
+Research defaults to the full universe that v4 is allowed to trade. Set `AUTONOMY_RESEARCH_SYMBOLS_PER_RUN=0` to keep that behavior. If you set `AUTONOMY_SYMBOLS`, research uses that exact list; otherwise it uses all active tradable US equities. Positive `AUTONOMY_RESEARCH_SYMBOLS_PER_RUN` values restore rotating research batches.
+
 ```env
 AUTONOMY_ENABLED=true
 AUTONOMY_DRY_RUN=false
@@ -121,7 +123,7 @@ AUTONOMY_POSITION_BUYING_POWER_PCT=0.02
 AUTONOMY_SCREEN_SYMBOLS_PER_CYCLE=100
 AUTONOMY_RESEARCH_ENABLED=true
 AUTONOMY_RESEARCH_INTERVAL_SECONDS=21600
-AUTONOMY_RESEARCH_SYMBOLS_PER_RUN=250
+AUTONOMY_RESEARCH_SYMBOLS_PER_RUN=0
 AUTONOMY_RESEARCH_MAX_VARIANTS=1000
 AUTONOMY_RESEARCH_LOOKBACK_DAYS=1095
 AUTONOMY_RESEARCH_SCOUT_SYMBOLS=60

@@ -166,7 +166,7 @@ def load_settings() -> Settings:
             "AUTONOMY_RESEARCH_INTERVAL_SECONDS", 21600
         ),
         autonomy_research_symbols_per_run=env_int(
-            "AUTONOMY_RESEARCH_SYMBOLS_PER_RUN", 250
+            "AUTONOMY_RESEARCH_SYMBOLS_PER_RUN", 0
         ),
         autonomy_research_max_variants=env_int(
             "AUTONOMY_RESEARCH_MAX_VARIANTS", 1000

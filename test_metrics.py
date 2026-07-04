@@ -51,7 +51,7 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
     assert settings.autonomy_screen_symbols_per_cycle == 100
     assert settings.autonomy_research_enabled is True
     assert settings.autonomy_research_interval_seconds == 21600
-    assert settings.autonomy_research_symbols_per_run == 250
+    assert settings.autonomy_research_symbols_per_run == 0
     assert settings.autonomy_research_max_variants == 1000
     assert settings.autonomy_research_lookback_days == 1095
     assert settings.autonomy_research_scout_symbols == 60
