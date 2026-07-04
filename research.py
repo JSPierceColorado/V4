@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+import re
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from statistics import mean
+from statistics import mean, pstdev
 from typing import Any, Dict, Iterable, List, Tuple
 
 from alpaca_rest import AlpacaError, AlpacaRest
@@ -14,6 +16,24 @@ from evolution import (
     strategy_snapshot,
 )
 from storage import utc_now
+from v4_doctrine import STRATEGY_DSL_GUIDE, V4_DOCTRINE
+
+
+DSL_METRICS = {
+    "close",
+    "sma20",
+    "sma50",
+    "sma200",
+    "high_20",
+    "low_20",
+    "pos_52w",
+    "ret_5d_pct",
+    "ret_20d_pct",
+    "volume_ratio",
+    "volatility_20_pct",
+    "score",
+}
+DSL_OPERATORS = {">", ">=", "<", "<="}
 
 
 def _float(value: Any, default: float = 0.0) -> float:
@@ -37,30 +57,61 @@ def _sma(values: List[float], window: int) -> float:
     return mean(clean[-window:]) if len(clean) >= window else mean(clean)
 
 
-def _signal_score(closes: List[float], volumes: List[float], index: int, score_bias: float) -> float:
+def _indicators(closes: List[float], volumes: List[float], index: int) -> Dict[str, float]:
     close = closes[index]
     history = closes[: index + 1]
     volume_history = volumes[: index + 1]
     low = min(history[-252:]) if history else close
     high = max(history[-252:]) if history else close
     pos_52w = (close - low) / (high - low) if high > low else 0.5
+    high_20 = max(closes[max(0, index - 20) : index]) if index > 0 else close
+    low_20 = min(closes[max(0, index - 20) : index]) if index > 0 else close
+    sma20 = _sma(history, 20)
+    sma50 = _sma(history, 50)
+    sma200 = _sma(history, 200)
+    recent_returns = [
+        (history[i] / history[i - 1]) - 1
+        for i in range(max(1, len(history) - 20), len(history))
+        if history[i - 1] > 0
+    ]
+    ret_5d_pct = ((close / closes[index - 5]) - 1) * 100 if index >= 5 and closes[index - 5] else 0.0
     ret_20d_pct = ((close / closes[index - 20]) - 1) * 100 if index >= 20 and closes[index - 20] else 0.0
     avg_volume_20 = _sma(volume_history[:-1], 20)
     volume_ratio = volumes[index] / avg_volume_20 if avg_volume_20 else 0.0
+    volatility_20_pct = pstdev(recent_returns) * 100 if len(recent_returns) >= 2 else 0.0
+    return {
+        "close": close,
+        "sma20": sma20,
+        "sma50": sma50,
+        "sma200": sma200,
+        "high_20": high_20,
+        "low_20": low_20,
+        "pos_52w": pos_52w,
+        "ret_5d_pct": ret_5d_pct,
+        "ret_20d_pct": ret_20d_pct,
+        "volume_ratio": volume_ratio,
+        "volatility_20_pct": volatility_20_pct,
+    }
+
+
+def _signal_score(closes: List[float], volumes: List[float], index: int, score_bias: float) -> float:
+    indicators = _indicators(closes, volumes, index)
+    close = indicators["close"]
     score = 0.0
-    if close > _sma(history, 50):
+    if close > indicators["sma50"]:
         score += 18
-    if close > _sma(history, 200):
+    if close > indicators["sma200"]:
         score += 18
-    score += max(0.0, min(1.0, pos_52w)) * 25
-    score += max(-10.0, min(20.0, ret_20d_pct))
-    score += max(0.0, min(12.0, volume_ratio * 4))
+    score += max(0.0, min(1.0, indicators["pos_52w"])) * 25
+    score += max(-10.0, min(20.0, indicators["ret_20d_pct"]))
+    score += max(0.0, min(12.0, indicators["volume_ratio"] * 4))
     return round(score + score_bias, 4)
 
 
 def _strategy_id(params: Dict[str, Any]) -> str:
+    family = str(params.get("family", "momentum")).replace("_", "")[:6]
     return (
-        "research_"
+        f"research_{family}_"
         f"tp{int(_float(params['take_profit_pct']) * 1000)}_"
         f"sl{int(abs(_float(params['stop_loss_pct'])) * 1000)}_"
         f"ms{int(_float(params['min_entry_score']))}_"
@@ -69,47 +120,302 @@ def _strategy_id(params: Dict[str, Any]) -> str:
     )
 
 
+def _slug(value: Any) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
+    return slug[:36] or "idea"
+
+
 def generate_strategy_variants(seed_state: Dict[str, Any], max_variants: int = 48) -> List[Dict[str, Any]]:
     variants: List[Dict[str, Any]] = []
     seen = set()
     bases = list((seed_state.get("strategies") or DEFAULT_STRATEGIES).values())
-    take_profits = [0.02, 0.03, 0.04, 0.06, 0.08]
-    stop_losses = [-0.0125, -0.02, -0.03, -0.045]
-    min_scores = [45, 55, 65]
-    max_holds = [5, 10, 20, 35]
-    biases = [-5, 0, 5]
+    families = [
+        "momentum",
+        "breakout",
+        "volume_momentum",
+        "trend_pullback",
+        "dip_buy",
+        "mean_reversion",
+        "oversold_reclaim",
+        "volatility_runner",
+    ]
+    take_profits = [0.0125, 0.02, 0.03, 0.04, 0.06, 0.08]
+    stop_losses = [-0.01, -0.0125, -0.02, -0.03, -0.045]
+    min_scores = [20, 30, 40, 50, 60, 70]
+    max_holds = [2, 3, 5, 10, 20, 35]
+    biases = [-10, -5, 0, 5, 10]
     for base in bases:
         for take_profit in take_profits:
             for stop_loss in stop_losses:
                 for min_score in min_scores:
                     for max_hold in max_holds:
                         for bias in biases:
-                            params = {
-                                "score_bias": _float(base.get("score_bias")) + bias,
-                                "min_entry_score": min_score,
-                                "take_profit_pct": take_profit,
-                                "stop_loss_pct": stop_loss,
-                                "max_hold_days": max_hold,
-                            }
-                            strategy_id = _strategy_id(params)
-                            if strategy_id in seen:
-                                continue
-                            seen.add(strategy_id)
-                            variants.append(
-                                {
-                                    "id": strategy_id,
-                                    "label": (
-                                        f"Research TP {take_profit:.1%} / "
-                                        f"SL {stop_loss:.1%} / min {min_score} / hold {max_hold}d"
-                                    ),
-                                    "source": "research",
-                                    **params,
-                                    "stats": deepcopy(base.get("stats") or {}),
+                            for family in families:
+                                params = {
+                                    "family": family,
+                                    "score_bias": _float(base.get("score_bias")) + bias,
+                                    "min_entry_score": min_score,
+                                    "take_profit_pct": take_profit,
+                                    "stop_loss_pct": stop_loss,
+                                    "max_hold_days": max_hold,
                                 }
-                            )
-                            if len(variants) >= max_variants:
-                                return variants
+                                strategy_id = _strategy_id(params)
+                                if strategy_id in seen:
+                                    continue
+                                seen.add(strategy_id)
+                                variants.append(
+                                    {
+                                        "id": strategy_id,
+                                        "label": (
+                                            f"Research {family.replace('_', ' ')} / "
+                                            f"TP {take_profit:.1%} / SL {stop_loss:.1%} / "
+                                            f"min {min_score} / hold {max_hold}d"
+                                        ),
+                                        "source": "research",
+                                        **params,
+                                        "stats": deepcopy(base.get("stats") or {}),
+                                    }
+                                )
+                                if len(variants) >= max_variants:
+                                    return variants
     return variants
+
+
+def _compare(left: float, op: str, right: float) -> bool:
+    if op == ">":
+        return left > right
+    if op == ">=":
+        return left >= right
+    if op == "<":
+        return left < right
+    if op == "<=":
+        return left <= right
+    return False
+
+
+def _dsl_entry_signal(strategy: Dict[str, Any], indicators: Dict[str, float], score: float) -> bool:
+    rules = strategy.get("entry_rules") or []
+    if not isinstance(rules, list) or not rules:
+        return False
+    values = {**indicators, "score": score}
+    passed = []
+    for rule in rules[:8]:
+        if not isinstance(rule, dict):
+            continue
+        metric = str(rule.get("metric") or "").strip()
+        op = str(rule.get("op") or "").strip()
+        if metric not in DSL_METRICS or op not in DSL_OPERATORS:
+            continue
+        passed.append(_compare(_float(values.get(metric)), op, _float(rule.get("value"))))
+    if not passed:
+        return False
+    logic = str(strategy.get("entry_logic") or "all").lower()
+    if logic == "any":
+        return any(passed)
+    return all(passed)
+
+
+def _entry_signal(strategy: Dict[str, Any], closes: List[float], volumes: List[float], index: int) -> tuple[bool, float]:
+    score = _signal_score(closes, volumes, index, _float(strategy.get("score_bias")))
+    if score < _float(strategy.get("min_entry_score")):
+        return False, score
+    indicators = _indicators(closes, volumes, index)
+    close = indicators["close"]
+    if strategy.get("entry_rules"):
+        return _dsl_entry_signal(strategy, indicators, score), score
+    family = strategy.get("family", "momentum")
+    if family == "momentum":
+        return close > indicators["sma50"] and indicators["ret_20d_pct"] > 0, score
+    if family == "breakout":
+        return close >= indicators["high_20"] * 0.995 and indicators["volume_ratio"] >= 1.05, score
+    if family == "volume_momentum":
+        return (
+            close > indicators["sma20"]
+            and indicators["ret_5d_pct"] > 1.0
+            and indicators["volume_ratio"] >= 1.2
+        ), score
+    if family == "trend_pullback":
+        return (
+            close > indicators["sma50"]
+            and close < indicators["sma20"] * 1.01
+            and indicators["ret_20d_pct"] > -4
+        ), score
+    if family == "dip_buy":
+        return (
+            close > indicators["sma200"]
+            and indicators["ret_5d_pct"] < -1.5
+            and indicators["pos_52w"] > 0.35
+        ), score
+    if family == "mean_reversion":
+        return close <= indicators["low_20"] * 1.02 and indicators["ret_20d_pct"] < -3, score
+    if family == "oversold_reclaim":
+        return (
+            indicators["ret_5d_pct"] < -2.0
+            and close > indicators["low_20"] * 1.025
+            and indicators["volume_ratio"] >= 0.8
+        ), score
+    if family == "volatility_runner":
+        return (
+            close > indicators["sma50"]
+            and indicators["ret_20d_pct"] > 4.0
+            and indicators["volatility_20_pct"] >= 1.2
+            and indicators["volume_ratio"] >= 0.9
+        ), score
+    return score >= _float(strategy.get("min_entry_score")), score
+
+
+def _json_from_text(text: str) -> Dict[str, Any] | None:
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text).strip()
+        text = re.sub(r"```$", "", text).strip()
+    try:
+        value = json.loads(text)
+        return value if isinstance(value, dict) else None
+    except json.JSONDecodeError:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            value = json.loads(text[start : end + 1])
+            return value if isinstance(value, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _clamp(value: Any, low: float, high: float, default: float) -> float:
+    number = _float(value, default)
+    return max(low, min(high, number))
+
+
+def _normalize_ai_strategy(raw: Dict[str, Any], index: int) -> Dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    rules = []
+    for rule in raw.get("entry_rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        metric = str(rule.get("metric") or "").strip()
+        op = str(rule.get("op") or "").strip()
+        if metric not in DSL_METRICS or op not in DSL_OPERATORS:
+            continue
+        rules.append({"metric": metric, "op": op, "value": _float(rule.get("value"))})
+    if not rules:
+        return None
+    name = _slug(raw.get("name") or f"idea_{index}")
+    take_profit = _clamp(raw.get("take_profit_pct"), 0.005, 0.15, 0.04)
+    stop_loss = -_clamp(abs(_float(raw.get("stop_loss_pct"), 0.025)), 0.005, 0.12, 0.025)
+    max_hold = int(_clamp(raw.get("max_hold_days"), 1, 60, 20))
+    min_score = _clamp(raw.get("min_entry_score"), 0, 90, 20)
+    strategy_id = f"ai_{index}_{name}"
+    return {
+        "id": strategy_id,
+        "label": str(raw.get("label") or raw.get("name") or f"AI idea {index}")[:80],
+        "source": "ai_strategy_lab",
+        "family": "ai_dsl",
+        "thesis": str(raw.get("thesis") or "AI-authored strategy proposal")[:700],
+        "entry_logic": "any" if str(raw.get("entry_logic") or "").lower() == "any" else "all",
+        "entry_rules": rules[:8],
+        "score_bias": _clamp(raw.get("score_bias"), -20, 20, 0),
+        "min_entry_score": min_score,
+        "take_profit_pct": take_profit,
+        "stop_loss_pct": stop_loss,
+        "max_hold_days": max_hold,
+        "stats": {
+            "entries": 0,
+            "exits": 0,
+            "wins": 0,
+            "losses": 0,
+            "total_plpc": 0.0,
+            "fitness": 0.0,
+        },
+    }
+
+
+def _symbol_snapshot(symbol: str, bars: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    closes = [_float(bar.get("c")) for bar in bars if _float(bar.get("c")) > 0]
+    volumes = [_float(bar.get("v")) for bar in bars if _float(bar.get("c")) > 0]
+    if len(closes) < 60 or len(closes) != len(volumes):
+        return None
+    indicators = _indicators(closes, volumes, len(closes) - 1)
+    return {
+        "symbol": symbol,
+        "bars": len(closes),
+        "price": round(indicators["close"], 4),
+        "ret_5d_pct": round(indicators["ret_5d_pct"], 3),
+        "ret_20d_pct": round(indicators["ret_20d_pct"], 3),
+        "pos_52w": round(indicators["pos_52w"], 3),
+        "volume_ratio": round(indicators["volume_ratio"], 3),
+        "volatility_20_pct": round(indicators["volatility_20_pct"], 3),
+        "above_sma50": indicators["close"] > indicators["sma50"],
+        "above_sma200": indicators["close"] > indicators["sma200"],
+    }
+
+
+def generate_ai_strategy_variants(
+    settings: Settings,
+    seed_state: Dict[str, Any],
+    bars_by_symbol: Dict[str, Any],
+    *,
+    max_variants: int,
+) -> List[Dict[str, Any]]:
+    if (
+        not settings.autonomy_ai_strategy_lab_enabled
+        or not settings.openai_ready
+        or max_variants <= 0
+    ):
+        return []
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return []
+
+    snapshots = [
+        snapshot
+        for symbol, bars in list(bars_by_symbol.items())[:120]
+        if (snapshot := _symbol_snapshot(symbol, bars))
+    ]
+    if not snapshots:
+        return []
+    context = {
+        "doctrine": V4_DOCTRINE,
+        "strategy_dsl": STRATEGY_DSL_GUIDE,
+        "max_strategies": max_variants,
+        "recent_research": seed_state.get("last_research"),
+        "symbol_snapshots": snapshots,
+    }
+    prompt = (
+        "You are v4's autonomous trading research strategist. "
+        "Create diverse, thesis-driven paper-trading strategy candidates as JSON data. "
+        "Do not return prose. Return only JSON shaped like "
+        '{"strategies":[{"name":"...","thesis":"...","entry_logic":"all",'
+        '"entry_rules":[{"metric":"ret_20d_pct","op":">","value":3}],'
+        '"take_profit_pct":0.04,"stop_loss_pct":-0.025,"max_hold_days":20,'
+        '"min_entry_score":20,"score_bias":0}]}. '
+        "Prefer varied ideas over small parameter tweaks."
+    )
+    try:
+        client = OpenAI(api_key=settings.openai_api_key)
+        response = client.responses.create(
+            model=settings.openai_model,
+            input=f"{prompt}\n\nContext:\n{json.dumps(context, default=str)[:50000]}",
+        )
+        parsed = _json_from_text(getattr(response, "output_text", "") or "")
+    except Exception:
+        return []
+    strategies = []
+    seen = set()
+    for index, raw in enumerate((parsed or {}).get("strategies") or [], start=1):
+        strategy = _normalize_ai_strategy(raw, index)
+        if not strategy or strategy["id"] in seen:
+            continue
+        seen.add(strategy["id"])
+        strategies.append(strategy)
+        if len(strategies) >= max_variants:
+            break
+    return strategies
 
 
 def _simulate_strategy_on_bars(strategy: Dict[str, Any], bars_by_symbol: Dict[str, Any]) -> Dict[str, Any]:
@@ -152,8 +458,8 @@ def _simulate_strategy_on_bars(strategy: Dict[str, Any], bars_by_symbol: Dict[st
                     position = None
                 continue
 
-            score = _signal_score(closes, volumes, index, _float(strategy.get("score_bias")))
-            if score >= _float(strategy.get("min_entry_score")):
+            should_enter, score = _entry_signal(strategy, closes, volumes, index)
+            if should_enter:
                 position = {"entry_index": index, "entry_price": close, "score": score}
 
     wins = sum(1 for trade in trades if trade["return_pct"] > 0)
@@ -211,7 +517,12 @@ def _fetch_bars(alpaca: AlpacaRest, symbols: List[str]) -> Dict[str, Any]:
 
 def run_research(settings: Settings, alpaca: AlpacaRest) -> Dict[str, Any]:
     state = load_evolution_state(settings.data_dir)
-    symbols = _select_symbols(settings, alpaca, state, limit=25)
+    symbols = _select_symbols(
+        settings,
+        alpaca,
+        state,
+        limit=settings.autonomy_research_symbols_per_run,
+    )
     if not symbols:
         return {"ok": False, "reply": "No symbols were available for research."}
     try:
@@ -229,7 +540,20 @@ def run_research(settings: Settings, alpaca: AlpacaRest) -> Dict[str, Any]:
         }
 
     train_bars, test_bars = _split_bars(bars)
-    variants = generate_strategy_variants(state, max_variants=48)
+    ai_variants = generate_ai_strategy_variants(
+        settings,
+        state,
+        bars,
+        max_variants=settings.autonomy_ai_strategy_ideas,
+    )
+    deterministic_variants = generate_strategy_variants(
+        state,
+        max_variants=max(
+            0,
+            settings.autonomy_research_max_variants - len(ai_variants),
+        ),
+    )
+    variants = ai_variants + deterministic_variants
     leaderboard = []
     for strategy in variants:
         train = _simulate_strategy_on_bars(strategy, train_bars)
@@ -264,17 +588,36 @@ def run_research(settings: Settings, alpaca: AlpacaRest) -> Dict[str, Any]:
     state["last_research"] = {
         "researched_at": utc_now(),
         "symbols": symbols,
+        "selected_symbols_count": len(symbols),
         "bars_symbols": len(bars),
         "variants_tested": len(leaderboard),
+        "ai_variants_tested": len(ai_variants),
+        "coded_variants_tested": len(deterministic_variants),
         "best_strategy_id": best_strategy["id"],
         "best": best,
         "top": leaderboard[:10],
+        "family_counts": {
+            family: sum(
+                1
+                for row in leaderboard
+                if (row.get("strategy") or {}).get("family") == family
+            )
+            for family in sorted(
+                {
+                    (row.get("strategy") or {}).get("family")
+                    for row in leaderboard
+                    if (row.get("strategy") or {}).get("family")
+                }
+            )
+        },
     }
     save_evolution_state(settings.data_dir, state)
     return {
         "ok": True,
         "reply": (
-            f"Research tested {len(leaderboard)} variants on {len(bars)} symbols. "
+            f"Research tested {len(leaderboard)} variants on {len(bars)} usable symbols "
+            f"({len(symbols)} selected). "
+            f"AI lab contributed {len(ai_variants)} thesis-driven variants. "
             f"Deployed {best_strategy['id']} with validation return "
             f"{best['validation']['total_return_pct']:.2%}, "
             f"win rate {best['validation']['win_rate']:.1%}, "

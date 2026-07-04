@@ -21,6 +21,10 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
         "AUTONOMY_SCREEN_SYMBOLS_PER_CYCLE",
         "AUTONOMY_RESEARCH_ENABLED",
         "AUTONOMY_RESEARCH_INTERVAL_SECONDS",
+        "AUTONOMY_RESEARCH_SYMBOLS_PER_RUN",
+        "AUTONOMY_RESEARCH_MAX_VARIANTS",
+        "AUTONOMY_AI_STRATEGY_LAB_ENABLED",
+        "AUTONOMY_AI_STRATEGY_IDEAS",
         "AGENT_OPERATOR_ENABLED",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -38,6 +42,10 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
     assert settings.autonomy_screen_symbols_per_cycle == 100
     assert settings.autonomy_research_enabled is True
     assert settings.autonomy_research_interval_seconds == 21600
+    assert settings.autonomy_research_symbols_per_run == 250
+    assert settings.autonomy_research_max_variants == 1000
+    assert settings.autonomy_ai_strategy_lab_enabled is True
+    assert settings.autonomy_ai_strategy_ideas == 48
     assert settings.agent_operator_enabled is True
 
 

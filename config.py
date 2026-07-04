@@ -84,6 +84,10 @@ class Settings:
     autonomy_screen_symbols_per_cycle: int
     autonomy_research_enabled: bool
     autonomy_research_interval_seconds: int
+    autonomy_research_symbols_per_run: int
+    autonomy_research_max_variants: int
+    autonomy_ai_strategy_lab_enabled: bool
+    autonomy_ai_strategy_ideas: int
     agent_operator_enabled: bool
 
     @property
@@ -150,5 +154,15 @@ def load_settings() -> Settings:
         autonomy_research_interval_seconds=env_int(
             "AUTONOMY_RESEARCH_INTERVAL_SECONDS", 21600
         ),
+        autonomy_research_symbols_per_run=env_int(
+            "AUTONOMY_RESEARCH_SYMBOLS_PER_RUN", 250
+        ),
+        autonomy_research_max_variants=env_int(
+            "AUTONOMY_RESEARCH_MAX_VARIANTS", 1000
+        ),
+        autonomy_ai_strategy_lab_enabled=env_bool(
+            "AUTONOMY_AI_STRATEGY_LAB_ENABLED", True
+        ),
+        autonomy_ai_strategy_ideas=env_int("AUTONOMY_AI_STRATEGY_IDEAS", 48),
         agent_operator_enabled=env_bool("AGENT_OPERATOR_ENABLED", True),
     )

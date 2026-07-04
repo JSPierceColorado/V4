@@ -117,6 +117,10 @@ AUTONOMY_POSITION_BUYING_POWER_PCT=0.02
 AUTONOMY_SCREEN_SYMBOLS_PER_CYCLE=100
 AUTONOMY_RESEARCH_ENABLED=true
 AUTONOMY_RESEARCH_INTERVAL_SECONDS=21600
+AUTONOMY_RESEARCH_SYMBOLS_PER_RUN=250
+AUTONOMY_RESEARCH_MAX_VARIANTS=1000
+AUTONOMY_AI_STRATEGY_LAB_ENABLED=true
+AUTONOMY_AI_STRATEGY_IDEAS=48
 AGENT_OPERATOR_ENABLED=true
 ```
 
@@ -141,6 +145,12 @@ show recent actions
 ## Research and Backtesting
 
 The research layer generates strategy variants, backtests them on historical daily bars, and deploys the highest-fitness variant into the live paper strategy state. It uses a train/test split, then reports validation return, win rate, trade count, and the active strategy.
+
+By default, each research job selects 250 rotating symbols from the tradable universe and tests 1000 variants. The current strategy grammar includes momentum, breakout, volume momentum, trend pullback, dip buy, mean reversion, oversold reclaim, and volatility runner families. This gives the operator a richer search space while staying inside one Railway program and Alpaca's data limits.
+
+When `AUTONOMY_AI_STRATEGY_LAB_ENABLED=true`, research also asks the model to create thesis-driven strategy candidates as JSON rule data. Those AI-authored candidates are not executable code; they are sanitized into a small DSL, backtested beside the coded variants, and promoted only if they win validation.
+
+The guiding v4 doctrine is built into the operator: observe the regime, form a thesis, generate candidates, backtest, deploy small, review live outcomes, evolve winners, and retire decaying ideas. Signals are evidence, not commandments.
 
 Research also runs automatically inside the background autonomy engine. By default, v4 checks before each 10-minute trading cycle and runs research when at least 6 hours have passed since the last periodic research job.
 

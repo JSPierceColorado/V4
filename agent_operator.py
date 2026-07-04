@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from config import Settings
 from evolution import load_evolution_state, strategy_snapshot
 from storage import append_event, load_events, utc_now
+from v4_doctrine import STRATEGY_DSL_GUIDE, V4_DOCTRINE
 
 
 ALLOWED_TOOLS = {
@@ -119,6 +120,14 @@ def build_operator_context(
             ),
             "market_clock_required_for_orders": True,
             "allowed_tools": sorted(ALLOWED_TOOLS),
+            "research_depth": {
+                "symbols_per_run": settings.autonomy_research_symbols_per_run,
+                "max_variants": settings.autonomy_research_max_variants,
+                "ai_strategy_lab_enabled": settings.autonomy_ai_strategy_lab_enabled,
+                "ai_strategy_ideas": settings.autonomy_ai_strategy_ideas,
+            },
+            "doctrine": V4_DOCTRINE,
+            "strategy_dsl": STRATEGY_DSL_GUIDE,
             "notes": [
                 "Research/backtesting may run while market is closed.",
                 "Autonomous order placement should use autonomy_cycle, which enforces market clock and sizing.",
@@ -169,6 +178,7 @@ def model_plan(settings: Settings, context: Dict[str, Any]) -> Dict[str, Any]:
     system = (
         "You are the v4 Agent Operator for an Alpaca paper-trading account. "
         "You are not chatting; you are deciding which internal tools to run now. "
+        f"{V4_DOCTRINE} "
         "Return only JSON with keys rationale and actions. actions is an array of "
         "objects with keys tool, args, reason. Allowed tools: research, autonomy_cycle, "
         "screen, metrics, clock, state, wait. Keep to at most 3 actions. "
@@ -246,9 +256,17 @@ def summarize_tool_result(result: Dict[str, Any]) -> str:
         validation = best.get("validation") or {}
         strategy_id = research.get("best_strategy_id")
         if strategy_id:
+            selected = research.get("selected_symbols_count")
+            bars_symbols = research.get("bars_symbols", 0)
+            symbol_text = (
+                f"on {bars_symbols} usable symbols ({selected} selected)"
+                if selected
+                else f"on {bars_symbols} symbols"
+            )
             return (
                 f"research: tested {research.get('variants_tested', 0)} variants "
-                f"on {research.get('bars_symbols', 0)} symbols. "
+                f"{symbol_text}. "
+                f"AI lab variants {research.get('ai_variants_tested', 0)}. "
                 f"Deployed {strategy_id}. "
                 f"Validation return {_format_pct(validation.get('total_return_pct'))}, "
                 f"win rate {_format_pct(validation.get('win_rate'))}, "
