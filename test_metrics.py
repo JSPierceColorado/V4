@@ -32,6 +32,8 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
         "AUTONOMY_MUTATION_PARENT_COUNT",
         "AUTONOMY_AI_STRATEGY_LAB_ENABLED",
         "AUTONOMY_AI_STRATEGY_IDEAS",
+        "AUTONOMY_AI_VARIANT_TRIAGE_ENABLED",
+        "AUTONOMY_AI_VARIANT_TRIAGE_TARGET",
         "AGENT_OPERATOR_ENABLED",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -60,6 +62,8 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
     assert settings.autonomy_mutation_parent_count == 8
     assert settings.autonomy_ai_strategy_lab_enabled is True
     assert settings.autonomy_ai_strategy_ideas == 48
+    assert settings.autonomy_ai_variant_triage_enabled is True
+    assert settings.autonomy_ai_variant_triage_target == 500
     assert settings.agent_operator_enabled is True
 
 

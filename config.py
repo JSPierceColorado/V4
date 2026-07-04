@@ -45,11 +45,13 @@ def env_symbols(name: str, default: str) -> Tuple[str, ...]:
 def normalize_openai_model(raw: str) -> str:
     model = raw.strip()
     if not model:
-        return "gpt-5.2"
+        return "gpt-5.5"
     aliases = {
         "5": "gpt-5",
         "5.1": "gpt-5.1",
         "5.2": "gpt-5.2",
+        "5.4": "gpt-5.4",
+        "5.5": "gpt-5.5",
         "mini": "gpt-5-mini",
         "nano": "gpt-5-nano",
     }
@@ -95,6 +97,8 @@ class Settings:
     autonomy_mutation_parent_count: int
     autonomy_ai_strategy_lab_enabled: bool
     autonomy_ai_strategy_ideas: int
+    autonomy_ai_variant_triage_enabled: bool
+    autonomy_ai_variant_triage_target: int
     agent_operator_enabled: bool
 
     @property
@@ -137,7 +141,7 @@ def load_settings() -> Settings:
         alpaca_data_feed=os.getenv("ALPACA_DATA_FEED", "iex").strip().lower()
         or "iex",
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
-        openai_model=normalize_openai_model(os.getenv("OPENAI_MODEL", "gpt-5.2")),
+        openai_model=normalize_openai_model(os.getenv("OPENAI_MODEL", "gpt-5.5")),
         data_dir=os.getenv("DATA_DIR", "./data").strip() or "./data",
         default_order_qty=env_float("DEFAULT_ORDER_QTY", 1.0),
         default_time_in_force=os.getenv("DEFAULT_TIME_IN_FORCE", "day").strip().lower()
@@ -186,5 +190,11 @@ def load_settings() -> Settings:
             "AUTONOMY_AI_STRATEGY_LAB_ENABLED", True
         ),
         autonomy_ai_strategy_ideas=env_int("AUTONOMY_AI_STRATEGY_IDEAS", 48),
+        autonomy_ai_variant_triage_enabled=env_bool(
+            "AUTONOMY_AI_VARIANT_TRIAGE_ENABLED", True
+        ),
+        autonomy_ai_variant_triage_target=env_int(
+            "AUTONOMY_AI_VARIANT_TRIAGE_TARGET", 500
+        ),
         agent_operator_enabled=env_bool("AGENT_OPERATOR_ENABLED", True),
     )

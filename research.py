@@ -556,6 +556,137 @@ def generate_ai_strategy_variants(
     return strategies
 
 
+def _compact_strategy(strategy: Dict[str, Any]) -> Dict[str, Any]:
+    compact = {
+        "id": strategy.get("id"),
+        "source": strategy.get("source"),
+        "family": strategy.get("family"),
+        "take_profit_pct": strategy.get("take_profit_pct"),
+        "stop_loss_pct": strategy.get("stop_loss_pct"),
+        "max_hold_days": strategy.get("max_hold_days"),
+        "min_entry_score": strategy.get("min_entry_score"),
+        "score_bias": strategy.get("score_bias"),
+    }
+    if strategy.get("parent_strategy_id"):
+        compact["parent_strategy_id"] = strategy.get("parent_strategy_id")
+    if strategy.get("thesis"):
+        compact["thesis"] = str(strategy.get("thesis"))[:240]
+    if strategy.get("entry_rules"):
+        compact["entry_logic"] = strategy.get("entry_logic", "all")
+        compact["entry_rules"] = strategy.get("entry_rules")[:5]
+    return compact
+
+
+def ai_triage_variants(
+    settings: Settings,
+    seed_state: Dict[str, Any],
+    bars_by_symbol: Dict[str, Any],
+    variants: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    target = max(1, settings.autonomy_ai_variant_triage_target)
+    if (
+        not settings.autonomy_ai_variant_triage_enabled
+        or not settings.openai_ready
+        or len(variants) <= target
+    ):
+        return variants, {
+            "enabled": settings.autonomy_ai_variant_triage_enabled,
+            "used": False,
+            "reason": "not_needed",
+            "input_variants": len(variants),
+            "selected_variants": len(variants),
+            "target": target,
+        }
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return variants, {
+            "enabled": True,
+            "used": False,
+            "reason": "openai_package_missing",
+            "input_variants": len(variants),
+            "selected_variants": len(variants),
+            "target": target,
+        }
+
+    snapshots = [
+        snapshot
+        for symbol, bars in list(bars_by_symbol.items())[:80]
+        if (snapshot := _symbol_snapshot(symbol, bars))
+    ]
+    payload = {
+        "doctrine": V4_DOCTRINE,
+        "task": (
+            "Select the most promising, diverse strategy variant IDs for CPU backtesting. "
+            "Favor thesis diversity, mutation descendants of near-winners, AI-authored rules, "
+            "reasonable risk/reward, enough trade potential, and avoid tiny parameter duplicates."
+        ),
+        "target_count": target,
+        "recent_research": seed_state.get("last_research"),
+        "research_history": (seed_state.get("research_history") or [])[-10:],
+        "symbol_snapshots": snapshots,
+        "variants": [_compact_strategy(strategy) for strategy in variants],
+    }
+    prompt = (
+        "You are v4's research director. Use judgment to reduce CPU work before "
+        "backtesting. Return only JSON: "
+        '{"selected_ids":["id1","id2"],"rationale":"short reason"}. '
+        f"Select up to {target} IDs from the provided variants. Do not invent IDs."
+    )
+    try:
+        client = OpenAI(api_key=settings.openai_api_key)
+        response = client.responses.create(
+            model=settings.openai_model,
+            input=f"{prompt}\n\nContext:\n{json.dumps(payload, default=str)[:180000]}",
+        )
+        parsed = _json_from_text(getattr(response, "output_text", "") or "")
+    except Exception as exc:
+        return variants, {
+            "enabled": True,
+            "used": False,
+            "reason": "openai_error",
+            "error": str(exc),
+            "input_variants": len(variants),
+            "selected_variants": len(variants),
+            "target": target,
+        }
+
+    selected_ids = []
+    seen_ids = set()
+    for raw_id in (parsed or {}).get("selected_ids") or []:
+        variant_id = str(raw_id)
+        if variant_id and variant_id not in seen_ids:
+            seen_ids.add(variant_id)
+            selected_ids.append(variant_id)
+    by_id = {str(strategy.get("id")): strategy for strategy in variants}
+    selected = [by_id[variant_id] for variant_id in selected_ids if variant_id in by_id]
+    minimum_valid = min(len(variants), max(3, min(target, len(variants)) // 3))
+    if len(selected) < minimum_valid:
+        return variants, {
+            "enabled": True,
+            "used": False,
+            "reason": "too_few_valid_ids",
+            "input_variants": len(variants),
+            "selected_variants": len(variants),
+            "target": target,
+            "valid_ids_returned": len(selected),
+        }
+    for strategy in variants:
+        if len(selected) >= target:
+            break
+        if strategy not in selected:
+            selected.append(strategy)
+    return selected[:target], {
+        "enabled": True,
+        "used": True,
+        "reason": "openai_selected",
+        "input_variants": len(variants),
+        "selected_variants": len(selected[:target]),
+        "target": target,
+        "rationale": (parsed or {}).get("rationale"),
+    }
+
+
 def _simulate_strategy_on_bars(strategy: Dict[str, Any], bars_by_symbol: Dict[str, Any]) -> Dict[str, Any]:
     trades: List[Dict[str, Any]] = []
     equity = 1.0
@@ -744,7 +875,18 @@ def run_research(
             settings.autonomy_research_max_variants - len(ai_variants) - len(mutation_variants),
         ),
     )
-    variants = ai_variants + mutation_variants + deterministic_variants
+    generated_variants = ai_variants + mutation_variants + deterministic_variants
+    progress(
+        {
+            "stage": "ai_triage",
+            "message": (
+                f"AI triaging {len(generated_variants)} generated variants "
+                f"toward {settings.autonomy_ai_variant_triage_target} scout candidates."
+            ),
+            "variants_total": len(generated_variants),
+        }
+    )
+    variants, triage = ai_triage_variants(settings, state, bars, generated_variants)
     scout_rows = []
     total_variants = len(variants)
     progress(
@@ -848,8 +990,10 @@ def run_research(
         "selected_symbols_count": len(symbols),
         "bars_symbols": len(bars),
         "lookback_days": settings.autonomy_research_lookback_days,
+        "variants_generated": len(generated_variants),
         "variants_tested": len(variants),
         "variants_validated": len(leaderboard),
+        "ai_triage": triage,
         "scout_symbols": len(scout_train_bars),
         "validation_top_variants": len(finalists),
         "ai_variants_tested": len(ai_variants),
@@ -896,8 +1040,10 @@ def run_research(
             "symbols_selected": len(symbols),
             "symbols_usable": len(bars),
             "lookback_days": settings.autonomy_research_lookback_days,
+            "variants_generated": len(generated_variants),
             "variants_tested": len(variants),
             "variants_validated": len(leaderboard),
+            "ai_triage_used": bool(triage.get("used")),
             "ai_variants_tested": len(ai_variants),
             "mutation_variants_tested": len(mutation_variants),
         }
@@ -907,7 +1053,9 @@ def run_research(
     return {
         "ok": True,
         "reply": (
-            f"Research scouted {len(variants)} variants on {len(scout_train_bars)} scout symbols "
+            f"Research generated {len(generated_variants)} variants, "
+            f"{'AI-triaged to' if triage.get('used') else 'scouted'} {len(variants)} variants "
+            f"on {len(scout_train_bars)} scout symbols "
             f"and validated {len(leaderboard)} finalists on {len(bars)} usable symbols "
             f"({len(symbols)} selected). "
             f"AI lab contributed {len(ai_variants)} thesis-driven variants. "

@@ -82,10 +82,10 @@ Remove `dry_run=true` to place the paper order.
 Use a full model id:
 
 ```env
-OPENAI_MODEL=gpt-5.2
+OPENAI_MODEL=gpt-5.5
 ```
 
-The app also accepts short aliases like `5.2`, `5.1`, `mini`, and `nano`.
+The app also accepts short aliases like `5.5`, `5.4`, `5.2`, `5.1`, `mini`, and `nano`.
 
 ## Metrics
 
@@ -130,6 +130,8 @@ AUTONOMY_MUTATION_VARIANTS=160
 AUTONOMY_MUTATION_PARENT_COUNT=8
 AUTONOMY_AI_STRATEGY_LAB_ENABLED=true
 AUTONOMY_AI_STRATEGY_IDEAS=48
+AUTONOMY_AI_VARIANT_TRIAGE_ENABLED=true
+AUTONOMY_AI_VARIANT_TRIAGE_TARGET=500
 AGENT_OPERATOR_ENABLED=true
 ```
 
@@ -156,7 +158,9 @@ show recent actions
 
 The research layer generates strategy variants, backtests them on historical daily bars, and deploys the highest-fitness variant into the live paper strategy state. It uses a train/test split, then reports validation return, win rate, trade count, and the active strategy.
 
-By default, each research job selects 250 rotating symbols from the tradable universe, looks back 1095 calendar days when Alpaca has that history, and generates 1000 variants. To keep the lab practical on Railway, v4 first scouts every variant on 60 symbols, then validates the top 50 finalists across the full train/test split. The current strategy grammar includes momentum, breakout, volume momentum, trend pullback, dip buy, mean reversion, oversold reclaim, and volatility runner families. This gives the operator a richer search space while staying inside one Railway program and Alpaca's data limits.
+By default, each research job selects 250 rotating symbols from the tradable universe, looks back 1095 calendar days when Alpaca has that history, and generates 1000 variants. To keep the lab practical on Railway, v4 can use AI triage to choose a smaller scout set, scouts that set on 60 symbols, then validates the top 50 finalists across the full train/test split. The current strategy grammar includes momentum, breakout, volume momentum, trend pullback, dip buy, mean reversion, oversold reclaim, and volatility runner families. This gives the operator a richer search space while staying inside one Railway program and Alpaca's data limits.
+
+When `AUTONOMY_AI_VARIANT_TRIAGE_ENABLED=true`, v4 uses OpenAI to preselect the most promising and diverse strategy IDs before CPU scouting. The default target is 500 scouted variants from the 1000-variant generated pool, which makes the research split roughly half AI judgment and half Railway backtesting while keeping validation as the final judge.
 
 Research records the best candidate every run, but with `AUTONOMY_RESEARCH_REQUIRE_PROFITABLE=true` it only promotes a strategy into the active paper-trading slot if validation return is positive and it produced enough trades. Losing candidates stay as research evidence instead of becoming the active strategy.
 

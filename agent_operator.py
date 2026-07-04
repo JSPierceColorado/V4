@@ -125,6 +125,8 @@ def build_operator_context(
                 "max_variants": settings.autonomy_research_max_variants,
                 "ai_strategy_lab_enabled": settings.autonomy_ai_strategy_lab_enabled,
                 "ai_strategy_ideas": settings.autonomy_ai_strategy_ideas,
+                "ai_variant_triage_enabled": settings.autonomy_ai_variant_triage_enabled,
+                "ai_variant_triage_target": settings.autonomy_ai_variant_triage_target,
             },
             "doctrine": V4_DOCTRINE,
             "strategy_dsl": STRATEGY_DSL_GUIDE,
@@ -270,8 +272,16 @@ def summarize_tool_result(result: Dict[str, Any]) -> str:
                 if promoted is not False
                 else f"Did not deploy {strategy_id}; kept {research.get('active_strategy_id') or 'previous strategy'}."
             )
+            generated = research.get("variants_generated")
+            tested = research.get("variants_tested", 0)
+            triage = research.get("ai_triage") or {}
+            triage_text = (
+                f"generated {generated}, AI-triaged to {tested}"
+                if triage.get("used") and generated
+                else f"scouted {tested}"
+            )
             return (
-                f"research: scouted {research.get('variants_tested', 0)} variants "
+                f"research: {triage_text} variants "
                 f"and validated {research.get('variants_validated', research.get('variants_tested', 0))} finalists "
                 f"{symbol_text}. "
                 f"AI lab variants {research.get('ai_variants_tested', 0)}. "

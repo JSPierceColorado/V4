@@ -84,6 +84,7 @@ class ResearchJobManager:
                 "symbols_per_run": settings.autonomy_research_symbols_per_run,
                 "max_variants": settings.autonomy_research_max_variants,
                 "lookback_days": settings.autonomy_research_lookback_days,
+                "ai_triage_target": settings.autonomy_ai_variant_triage_target,
                 "ai_strategy_ideas": settings.autonomy_ai_strategy_ideas,
             },
         )
@@ -767,6 +768,7 @@ def summarize_event(event: Dict[str, Any]) -> str:
             f"{payload.get('symbols_per_run', 'n/a')} symbols per run, "
             f"{payload.get('max_variants', 'n/a')} max variants, "
             f"{payload.get('lookback_days', 'n/a')} lookback days, "
+            f"{payload.get('ai_triage_target', 'n/a')} AI triage target, "
             f"{payload.get('ai_strategy_ideas', 'n/a')} AI ideas."
         )
     if event_type == "research_error":
@@ -932,6 +934,7 @@ def research() -> Dict[str, Any]:
             f"Testing up to {settings.autonomy_research_max_variants} variants "
             f"on {settings.autonomy_research_symbols_per_run} selected symbols, "
             f"using up to {settings.autonomy_research_lookback_days} days of history, "
+            f"AI-triaged toward {settings.autonomy_ai_variant_triage_target} scout candidates, "
             f"including up to {settings.autonomy_ai_strategy_ideas} AI lab ideas. "
             "Ask `research status` for progress."
         )

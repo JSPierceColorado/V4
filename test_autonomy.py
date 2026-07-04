@@ -70,6 +70,9 @@ def test_rule_parse_agent_operator() -> None:
 def test_normalize_openai_model_aliases() -> None:
     assert normalize_openai_model("5.1") == "gpt-5.1"
     assert normalize_openai_model("5.2") == "gpt-5.2"
+    assert normalize_openai_model("5.4") == "gpt-5.4"
+    assert normalize_openai_model("5.5") == "gpt-5.5"
+    assert normalize_openai_model("") == "gpt-5.5"
     assert normalize_openai_model("mini") == "gpt-5-mini"
 
 
