@@ -113,6 +113,8 @@ Research defaults to the full universe that v4 is allowed to trade. Set `AUTONOM
 
 Historical bar fetching is resumable. v4 caches completed research chunks in `DATA_DIR`, waits and retries when Alpaca returns a 429 rate limit, and resumes from cached chunks on the next research run if the limit persists or the app restarts.
 
+Promotion uses a champion/challenger gate. The active strategy is re-backtested on the same train/test data as the best new candidate. v4 only promotes the challenger when it is profitable and beats the champion by both the configured fitness edge and validation-return edge.
+
 ```env
 AUTONOMY_ENABLED=true
 AUTONOMY_DRY_RUN=false
@@ -131,6 +133,8 @@ AUTONOMY_RESEARCH_LOOKBACK_DAYS=1095
 AUTONOMY_RESEARCH_SCOUT_SYMBOLS=60
 AUTONOMY_RESEARCH_VALIDATE_TOP_VARIANTS=50
 AUTONOMY_RESEARCH_REQUIRE_PROFITABLE=true
+AUTONOMY_RESEARCH_CHALLENGER_MIN_FITNESS_EDGE=0.01
+AUTONOMY_RESEARCH_CHALLENGER_MIN_RETURN_EDGE=0.02
 AUTONOMY_MUTATION_ENABLED=true
 AUTONOMY_MUTATION_VARIANTS=160
 AUTONOMY_MUTATION_PARENT_COUNT=8

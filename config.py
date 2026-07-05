@@ -92,6 +92,8 @@ class Settings:
     autonomy_research_scout_symbols: int
     autonomy_research_validate_top_variants: int
     autonomy_research_require_profitable: bool
+    autonomy_research_challenger_min_fitness_edge: float
+    autonomy_research_challenger_min_return_edge: float
     autonomy_mutation_enabled: bool
     autonomy_mutation_variants: int
     autonomy_mutation_parent_count: int
@@ -182,6 +184,12 @@ def load_settings() -> Settings:
         ),
         autonomy_research_require_profitable=env_bool(
             "AUTONOMY_RESEARCH_REQUIRE_PROFITABLE", True
+        ),
+        autonomy_research_challenger_min_fitness_edge=env_float(
+            "AUTONOMY_RESEARCH_CHALLENGER_MIN_FITNESS_EDGE", 0.01
+        ),
+        autonomy_research_challenger_min_return_edge=env_float(
+            "AUTONOMY_RESEARCH_CHALLENGER_MIN_RETURN_EDGE", 0.02
         ),
         autonomy_mutation_enabled=env_bool("AUTONOMY_MUTATION_ENABLED", True),
         autonomy_mutation_variants=env_int("AUTONOMY_MUTATION_VARIANTS", 160),

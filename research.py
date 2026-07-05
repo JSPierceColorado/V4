@@ -821,6 +821,93 @@ def _simulate_strategy_on_bars(strategy: Dict[str, Any], bars_by_symbol: Dict[st
     }
 
 
+def _combined_fitness(train: Dict[str, Any], validation: Dict[str, Any]) -> float:
+    return round(train["fitness"] * 0.35 + validation["fitness"] * 0.65, 6)
+
+
+def _is_profitable_validation(validation: Dict[str, Any]) -> bool:
+    return validation["total_return_pct"] > 0 and validation["trades"] >= 3
+
+
+def _champion_baseline(
+    state: Dict[str, Any],
+    train_bars: Dict[str, Any],
+    test_bars: Dict[str, Any],
+) -> Dict[str, Any] | None:
+    strategies = state.get("strategies") or {}
+    strategy_id = state.get("active_strategy_id")
+    champion = strategies.get(strategy_id) if strategy_id else None
+    if not isinstance(champion, dict):
+        return None
+    train = _simulate_strategy_on_bars(champion, train_bars)
+    validation = _simulate_strategy_on_bars(champion, test_bars)
+    return {
+        "strategy": deepcopy(champion),
+        "train": train,
+        "validation": validation,
+        "combined_fitness": _combined_fitness(train, validation),
+        "profitable": _is_profitable_validation(validation),
+    }
+
+
+def _promotion_decision(
+    settings: Settings,
+    challenger: Dict[str, Any],
+    champion: Dict[str, Any] | None,
+) -> Dict[str, Any]:
+    if settings.autonomy_research_require_profitable and not challenger["profitable"]:
+        return {
+            "promote": False,
+            "reason": "validation_not_profitable",
+            "fitness_edge": None,
+            "return_edge": None,
+        }
+    if champion is None:
+        return {
+            "promote": True,
+            "reason": (
+                "no_champion_baseline"
+                if challenger["profitable"]
+                else "profitability_required_disabled"
+            ),
+            "fitness_edge": None,
+            "return_edge": None,
+        }
+    if (challenger.get("strategy") or {}).get("id") == (champion.get("strategy") or {}).get("id"):
+        return {
+            "promote": False,
+            "reason": "challenger_is_current_champion",
+            "fitness_edge": 0.0,
+            "return_edge": 0.0,
+        }
+
+    fitness_edge = round(
+        challenger["combined_fitness"] - champion["combined_fitness"],
+        6,
+    )
+    return_edge = round(
+        challenger["validation"]["total_return_pct"]
+        - champion["validation"]["total_return_pct"],
+        6,
+    )
+    if (
+        fitness_edge >= settings.autonomy_research_challenger_min_fitness_edge
+        and return_edge >= settings.autonomy_research_challenger_min_return_edge
+    ):
+        return {
+            "promote": True,
+            "reason": "champion_beaten",
+            "fitness_edge": fitness_edge,
+            "return_edge": return_edge,
+        }
+    return {
+        "promote": False,
+        "reason": "champion_not_beaten",
+        "fitness_edge": fitness_edge,
+        "return_edge": return_edge,
+    }
+
+
 def _split_bars(bars_by_symbol: Dict[str, Any], split: float = 0.65) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     train: Dict[str, Any] = {}
     test: Dict[str, Any] = {}
@@ -1112,7 +1199,7 @@ def run_research(
         strategy = row["strategy"]
         train = _simulate_strategy_on_bars(strategy, train_bars)
         validation = _simulate_strategy_on_bars(strategy, test_bars)
-        combined_fitness = round(train["fitness"] * 0.35 + validation["fitness"] * 0.65, 6)
+        combined_fitness = _combined_fitness(train, validation)
         leaderboard.append(
             {
                 "strategy": strategy,
@@ -1120,7 +1207,7 @@ def run_research(
                 "train": train,
                 "validation": validation,
                 "combined_fitness": combined_fitness,
-                "profitable": validation["total_return_pct"] > 0 and validation["trades"] >= 3,
+                "profitable": _is_profitable_validation(validation),
             }
         )
         if index == len(finalists) or index % 5 == 0:
@@ -1137,16 +1224,21 @@ def run_research(
     if not best:
         return {"ok": False, "reply": "Research did not produce any strategy variants."}
 
-    should_promote = bool(best["profitable"] or not settings.autonomy_research_require_profitable)
+    champion = _champion_baseline(state, train_bars, test_bars)
+    promotion = _promotion_decision(settings, best, champion)
+    should_promote = bool(promotion["promote"])
     progress(
         {
             "stage": "promoting" if should_promote else "not_promoting",
             "message": (
-                f"Promoting best strategy {best['strategy']['id']}."
+                (
+                    f"Promoting challenger {best['strategy']['id']} "
+                    f"over champion {(champion or {}).get('strategy', {}).get('id', 'none')}."
+                )
                 if should_promote
                 else (
                     f"Best candidate {best['strategy']['id']} was not promoted "
-                    "because validation was not profitable."
+                    f"because {promotion['reason']}."
                 )
             ),
         }
@@ -1186,13 +1278,9 @@ def run_research(
         "previous_active_strategy_id": previous_active_strategy_id,
         "active_strategy_id": state.get("active_strategy_id"),
         "promoted": should_promote,
-        "promotion_reason": (
-            "validation_profitable"
-            if should_promote and best["profitable"]
-            else "profitability_required_disabled"
-            if should_promote
-            else "validation_not_profitable"
-        ),
+        "promotion_reason": promotion["reason"],
+        "promotion": promotion,
+        "champion": champion,
         "best": best,
         "top": leaderboard[:10],
         "family_counts": {
@@ -1218,6 +1306,13 @@ def run_research(
             "promoted_strategy_id": best_strategy["id"] if should_promote else None,
             "validation": best["validation"],
             "combined_fitness": best["combined_fitness"],
+            "promotion_reason": promotion["reason"],
+            "promotion": promotion,
+            "champion_strategy_id": (
+                (champion or {}).get("strategy") or {}
+            ).get("id"),
+            "champion_validation": (champion or {}).get("validation"),
+            "champion_combined_fitness": (champion or {}).get("combined_fitness"),
             "symbols_selected": len(symbols),
             "symbols_usable": len(bars),
             "lookback_days": settings.autonomy_research_lookback_days,
@@ -1244,7 +1339,18 @@ def run_research(
             f"{'Deployed' if should_promote else 'Did not deploy'} {best_strategy['id']} "
             f"with validation return {best['validation']['total_return_pct']:.2%}, "
             f"win rate {best['validation']['win_rate']:.1%}, "
-            f"{best['validation']['trades']} trades."
+            f"{best['validation']['trades']} trades. "
+            f"Promotion reason: {promotion['reason']}."
+            + (
+                ""
+                if not champion
+                else (
+                    f" Champion {(champion.get('strategy') or {}).get('id')} "
+                    f"validated at {champion['validation']['total_return_pct']:.2%}; "
+                    f"challenger return edge "
+                    f"{(promotion.get('return_edge') or 0.0):.2%}."
+                )
+            )
             + ("" if should_promote else " Keeping previous active strategy.")
         ),
         "research": state["last_research"],
