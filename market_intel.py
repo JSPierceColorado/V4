@@ -181,3 +181,43 @@ def strategy_ideas(
     except Exception as exc:
         return {"ok": False, "error": str(exc), "reply": str(exc)}
     return {"ok": True, "reply": text, "ideas": text, "generated_at": utc_now()}
+
+
+def position_review(
+    settings: Settings,
+    *,
+    state: Dict[str, Any],
+    open_theses: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not open_theses:
+        return {
+            "ok": True,
+            "reply": "No open trade theses are recorded yet.",
+            "reviews": [],
+            "generated_at": utc_now(),
+        }
+    if not settings.openai_ready:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "openai_not_configured",
+            "reply": "Position review skipped because OPENAI_API_KEY is not configured.",
+        }
+    payload = {
+        "timestamp": utc_now(),
+        "doctrine": V4_DOCTRINE,
+        "account_state": _compact_state(state),
+        "open_trade_theses": open_theses[-20:],
+    }
+    prompt = (
+        "You are v4's live position reviewer. Search the web when useful, then compare "
+        "each open paper-trade thesis against current market context, catalysts, risks, "
+        "and the thesis's original invalidation triggers. Return concise hold/review/exit-watch "
+        "guidance. Do not place trades directly.\n\n"
+        f"Context:\n{json.dumps(payload, default=str)[:50000]}"
+    )
+    try:
+        text = _response_text(settings, prompt, search_context_size="medium")
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "reply": str(exc)}
+    return {"ok": True, "reply": text, "review": text, "generated_at": utc_now()}

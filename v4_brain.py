@@ -81,6 +81,10 @@ def rule_parse(message: str) -> Dict[str, Any]:
         return {"action": "market_brief", "args": {}}
     if "strategy ideas" in lowered or "trade ideas" in lowered or "search for ideas" in lowered:
         return {"action": "strategy_ideas", "args": {}}
+    if any(phrase in lowered for phrase in ("review positions", "position review", "review open trades")):
+        return {"action": "review_positions", "args": {}}
+    if any(phrase in lowered for phrase in ("trade theses", "open theses", "entry theses", "why did you enter")):
+        return {"action": "trade_theses", "args": {}}
     symbol_research_match = re.search(
         r"\b(?:research|search|look up|investigate)\s+(?P<symbol>[A-Z]{1,5}(?:\.[A-Z])?)\b",
         message,
@@ -163,7 +167,7 @@ def llm_parse(settings: Settings, message: str, context: Dict[str, Any]) -> Dict
         "You are v4, a concise paper-trading assistant and command parser. "
         "Return only JSON with keys action and args. "
         "Allowed actions: state, clock, events, metrics, screen, market_brief, symbol_research, "
-        "strategy_ideas, autonomy_start, autonomy_stop, autonomy_status, autonomy_cycle, agent_cycle, "
+        "strategy_ideas, review_positions, trade_theses, autonomy_start, autonomy_stop, autonomy_status, autonomy_cycle, agent_cycle, "
         "research, research_status, analyze, run, place_order, "
         "cancel_all_orders, close_all_positions, reply. "
         "Only choose place_order when the user clearly asks to place a paper order. "
@@ -171,6 +175,7 @@ def llm_parse(settings: Settings, message: str, context: Dict[str, Any]) -> Dict
         "time_in_force, limit_price, stop_price, extended_hours when known. "
         "For reply, put the final user-facing answer in args.text. "
         "Use market_brief, symbol_research, or strategy_ideas when the user asks for current web context, catalysts, or trade ideas. "
+        "Use trade_theses or review_positions when the user asks what the agent remembers about open trades. "
         "Write like a capable, direct trading copilot. Be warm, but avoid pretending "
         "to be human. Do not lead with disclaimers unless safety requires it. "
         "For casual questions about thinking, say that you can reason over the "

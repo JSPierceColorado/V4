@@ -12,6 +12,7 @@ from config import Settings, load_settings
 from ingest import parse_upload
 from metrics import build_metrics
 from market_intel import market_brief as build_market_brief
+from market_intel import position_review as build_position_review
 from market_intel import strategy_ideas as build_strategy_ideas
 from market_intel import symbol_research as build_symbol_research
 from order_safety import duplicate_order_reason
@@ -28,6 +29,7 @@ from storage import (
     utc_now,
 )
 from strategy import run_once
+from trade_memory import load_trade_thesis_records, open_trade_theses
 from v4_brain import llm_parse, llm_reply, rule_parse
 
 
@@ -787,6 +789,12 @@ def summarize_event(event: Dict[str, Any]) -> str:
         )
     if event_type == "strategy_ideas":
         return f"{ts} - strategy ideas\n{payload.get('reply') or payload.get('ideas') or 'Recorded.'}"
+    if event_type == "position_review":
+        return f"{ts} - position review\n{payload.get('reply') or payload.get('review') or 'Recorded.'}"
+    if event_type == "entry_thesis":
+        return f"{ts} - entry thesis {payload.get('symbol', '')}\n{payload.get('entry_reason', 'Recorded.')}"
+    if event_type == "exit_review":
+        return f"{ts} - exit review {payload.get('symbol', '')}\n{payload.get('lesson', 'Recorded.')}"
     if event_type == "autonomy_cycle":
         return f"{ts} - autonomy cycle\n{payload.get('summary', 'No summary.')}"
     if event_type == "autonomy_error":
@@ -941,6 +949,35 @@ def market_strategy_ideas() -> Dict[str, Any]:
     result = build_strategy_ideas(settings, state=raw_state, screen=screen_result)
     append_event(settings.data_dir, "strategy_ideas", result)
     return result
+
+
+@app.post("/market/review-positions", dependencies=[Depends(require_auth)])
+def market_review_positions() -> Dict[str, Any]:
+    client = alpaca()
+    raw_state = api_result(client.state)
+    result = build_position_review(
+        settings,
+        state=raw_state,
+        open_theses=open_trade_theses(settings.data_dir),
+    )
+    append_event(settings.data_dir, "position_review", result)
+    return result
+
+
+@app.get("/theses", dependencies=[Depends(require_auth)])
+def trade_theses(limit: int = 100) -> Dict[str, Any]:
+    limit = max(1, min(limit, 500))
+    open_rows = open_trade_theses(settings.data_dir, limit=limit)
+    records = load_trade_thesis_records(settings.data_dir, limit=limit)
+    return {
+        "ok": True,
+        "reply": (
+            f"Loaded {len(open_rows)} open trade thesis record(s) "
+            f"and {len(records)} recent thesis ledger record(s)."
+        ),
+        "open_trade_theses": open_rows,
+        "records": records,
+    }
 
 
 @app.get("/autonomy/status", dependencies=[Depends(require_auth)])
@@ -1154,6 +1191,10 @@ def query(req: QueryRequest) -> Dict[str, Any]:
         result = market_symbol(symbol)
     elif action == "strategy_ideas":
         result = market_strategy_ideas()
+    elif action == "review_positions":
+        result = market_review_positions()
+    elif action == "trade_theses":
+        result = trade_theses()
     elif action == "autonomy_start":
         result = autonomy_start()
     elif action == "autonomy_stop":

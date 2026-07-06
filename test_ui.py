@@ -35,7 +35,9 @@ def test_operator_context_includes_tools_and_recent_events(monkeypatch, tmp_path
     assert context["operator_policy"]["paper_account_only"] is True
     assert "autonomy_cycle" in context["operator_policy"]["allowed_tools"]
     assert "market_brief" in context["operator_policy"]["allowed_tools"]
+    assert "review_positions" in context["operator_policy"]["allowed_tools"]
     assert context["state"]["account"]["buying_power"] == "2000"
+    assert context["open_trade_theses"] == []
 
 
 def test_model_plan_falls_back_without_openai(monkeypatch, tmp_path) -> None:

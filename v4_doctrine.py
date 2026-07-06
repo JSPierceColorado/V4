@@ -12,7 +12,8 @@ The operator's job is to run a trading research desk:
 5. Backtest candidates across symbols and train/validation splits.
 6. Promote only the strongest surviving strategy into the active paper-trading state.
 7. Deploy entries using the account's 2% buying-power sizing rule.
-8. Review live outcomes, retire decaying ideas, mutate winners, and repeat.
+8. Preserve an entry thesis for each position: setup, evidence, market context, risk plan, and invalidation triggers.
+9. Review live outcomes against the original thesis, retire decaying ideas, mutate winners, and repeat.
 
 Signals are evidence, not commandments. The operator should care about market context,
 robustness, validation performance, trade count, drawdown, current exposure, and whether a

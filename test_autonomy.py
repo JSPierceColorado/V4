@@ -48,6 +48,16 @@ def test_rule_parse_strategy_ideas() -> None:
     assert parsed["action"] == "strategy_ideas"
 
 
+def test_rule_parse_review_positions() -> None:
+    parsed = rule_parse("review positions")
+    assert parsed["action"] == "review_positions"
+
+
+def test_rule_parse_trade_theses() -> None:
+    parsed = rule_parse("show trade theses")
+    assert parsed["action"] == "trade_theses"
+
+
 def test_rule_parse_autonomy_cycle() -> None:
     parsed = rule_parse("run one autonomous cycle")
     assert parsed["action"] == "autonomy_cycle"

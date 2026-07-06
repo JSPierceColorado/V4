@@ -25,10 +25,17 @@ from evolution import (
     tag_exit,
 )
 from metrics import build_metrics
-from market_intel import market_brief, strategy_ideas, symbol_research
+from market_intel import market_brief, position_review, strategy_ideas, symbol_research
 from research import run_research
 from screener import screen_symbols
 from storage import append_event, utc_now
+from trade_memory import (
+    build_entry_thesis,
+    build_exit_review,
+    open_trade_theses,
+    record_entry_thesis,
+    record_exit_review,
+)
 
 
 def _float(value: Any, default: float = 0.0) -> float:
@@ -239,6 +246,12 @@ class AutonomyEngine:
                         max_symbols_per_cycle=self.settings.autonomy_screen_symbols_per_cycle,
                     )
                     result = strategy_ideas(self.settings, state=state, screen=screen)
+                elif tool == "review_positions":
+                    result = position_review(
+                        self.settings,
+                        state=state,
+                        open_theses=open_trade_theses(self.settings.data_dir),
+                    )
                 elif tool == "autonomy_cycle":
                     result = self.run_cycle(alpaca)
                 elif tool == "screen":
@@ -424,6 +437,19 @@ class AutonomyEngine:
                         plpc=plpc,
                         reason=reason,
                     )
+                    action["exit_review"] = record_exit_review(
+                        self.settings.data_dir,
+                        build_exit_review(
+                            self.settings.data_dir,
+                            symbol=symbol,
+                            reason=reason,
+                            plpc=plpc,
+                            position=position,
+                            order=action.get("order"),
+                            exit_record=action["exit_record"],
+                        ),
+                    )
+                    append_event(self.settings.data_dir, "exit_review", action["exit_review"])
                     held.discard(symbol)
                     ordered.add(symbol)
                 except AlpacaError as exc:
@@ -486,6 +512,24 @@ class AutonomyEngine:
             if not self.settings.autonomy_dry_run:
                 try:
                     action["order"] = alpaca.place_order(**order_args)
+                    entry_thesis = build_entry_thesis(
+                        self.settings.data_dir,
+                        symbol=symbol,
+                        strategy=strategy,
+                        candidate=candidate,
+                        adjusted_score=adjusted_score(candidate, strategy),
+                        notional=notional,
+                        order=action.get("order"),
+                        market_clock=clock,
+                        account=account,
+                        research_state=evolution_state,
+                        source="autonomy_cycle",
+                    )
+                    action["entry_thesis"] = record_entry_thesis(
+                        self.settings.data_dir,
+                        entry_thesis,
+                    )
+                    append_event(self.settings.data_dir, "entry_thesis", action["entry_thesis"])
                     tag_entry(
                         evolution_state,
                         symbol=symbol,
@@ -493,6 +537,15 @@ class AutonomyEngine:
                         candidate=candidate,
                         notional=notional,
                     )
+                    evolution_state["positions"][symbol]["thesis_id"] = entry_thesis["thesis_id"]
+                    evolution_state["positions"][symbol]["entry_thesis_summary"] = {
+                        "entry_reason": entry_thesis["entry_reason"],
+                        "risk_plan": {
+                            "take_profit_pct": strategy.get("take_profit_pct"),
+                            "stop_loss_pct": strategy.get("stop_loss_pct"),
+                            "max_hold_days": strategy.get("max_hold_days"),
+                        },
+                    }
                     local_buying_power = max(0.0, local_buying_power - notional)
                 except AlpacaError as exc:
                     action["error"] = str(exc)
@@ -516,6 +569,7 @@ class AutonomyEngine:
             "market_clock": clock,
             "screen": screen,
             "strategy": strategy_report,
+            "open_trade_theses": open_trade_theses(self.settings.data_dir),
             "actions": actions,
         }
         append_event(self.settings.data_dir, "autonomy_cycle", result)

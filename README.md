@@ -12,6 +12,8 @@ One FastAPI service for Railway. It accepts CSV/PDF/text inputs, understands nat
 - `POST /market/brief`
 - `POST /market/symbol/{symbol}`
 - `POST /market/strategy-ideas`
+- `POST /market/review-positions`
+- `GET /theses`
 - `GET /research/status`
 - `GET /autonomy/status`
 - `POST /autonomy/start`
@@ -170,6 +172,8 @@ show recent actions
 market brief
 research NVDA
 strategy ideas
+review positions
+show trade theses
 ```
 
 ## Research and Backtesting
@@ -192,6 +196,8 @@ When `AUTONOMY_AI_STRATEGY_LAB_ENABLED=true`, research also asks the model to cr
 
 When `AUTONOMY_WEB_RESEARCH_ENABLED=true`, research can also use the model's web search tool to look for current market regimes, catalysts, sector themes, and risks, then convert that context into sanitized DSL candidates. These web-informed ideas are backtested beside AI lab, mutation, and coded variants before promotion.
 
+Every autonomous entry writes an append-only trade thesis record to `DATA_DIR/trade_theses.jsonl`. The thesis includes the active strategy, candidate feature snapshot, account/clock snapshot, recent market context, research context, risk plan, and invalidation triggers. Exits append an exit review that links back to the original thesis. Ask `show trade theses` to inspect open theses, or `review positions` to have the model compare open theses against current context.
+
 The guiding v4 doctrine is built into the operator: observe the regime, form a thesis, generate candidates, backtest, deploy small, review live outcomes, evolve winners, and retire decaying ideas. Signals are evidence, not commandments.
 
 Research also runs automatically inside the background autonomy engine. By default, v4 checks before each 10-minute trading cycle and runs research when at least 6 hours have passed since the last periodic research job.
@@ -208,4 +214,6 @@ research status
 market brief
 research NVDA
 strategy ideas
+review positions
+show trade theses
 ```

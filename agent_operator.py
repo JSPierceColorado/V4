@@ -6,8 +6,9 @@ from typing import Any, Dict, List, Optional
 
 from config import Settings
 from evolution import load_evolution_state, strategy_snapshot
-from market_intel import market_brief, strategy_ideas, symbol_research
+from market_intel import market_brief, position_review, strategy_ideas, symbol_research
 from storage import append_event, load_events, utc_now
+from trade_memory import open_trade_theses
 from v4_doctrine import STRATEGY_DSL_GUIDE, V4_DOCTRINE
 
 
@@ -16,6 +17,7 @@ ALLOWED_TOOLS = {
     "market_brief",
     "symbol_research",
     "strategy_ideas",
+    "review_positions",
     "autonomy_cycle",
     "screen",
     "metrics",
@@ -138,7 +140,7 @@ def build_operator_context(
             "strategy_dsl": STRATEGY_DSL_GUIDE,
             "notes": [
                 "Research/backtesting may run while market is closed.",
-                "Use market_brief, symbol_research, and strategy_ideas to bring current web context into the research desk.",
+                "Use market_brief, symbol_research, strategy_ideas, and review_positions to bring current web context into the research desk.",
                 "Autonomous order placement should use autonomy_cycle, which enforces market clock and sizing.",
                 "Prefer wait when market is closed and research is not due.",
             ],
@@ -146,6 +148,7 @@ def build_operator_context(
         "state": _compact_state(state),
         "autonomy_status": _compact_autonomy_status(autonomy_status),
         "strategy": strategy_snapshot(evolution_state),
+        "open_trade_theses": open_trade_theses(settings.data_dir),
         "last_research": evolution_state.get("last_research"),
         "research_history": (evolution_state.get("research_history") or [])[-10:],
         "recent_events": load_events(settings.data_dir, limit=12),
@@ -191,10 +194,10 @@ def model_plan(settings: Settings, context: Dict[str, Any]) -> Dict[str, Any]:
         f"{V4_DOCTRINE} "
         "Return only JSON with keys rationale and actions. actions is an array of "
         "objects with keys tool, args, reason. Allowed tools: research, autonomy_cycle, "
-        "market_brief, symbol_research, strategy_ideas, screen, metrics, clock, state, wait. Keep to at most 3 actions. "
+        "market_brief, symbol_research, strategy_ideas, review_positions, screen, metrics, clock, state, wait. Keep to at most 3 actions. "
         "Use autonomy_cycle for paper orders; it enforces market clock, exits, screening, "
         "2% buying-power sizing, and strategy rules. Use market_brief or symbol_research "
-        "when current market context could change the thesis. Use strategy_ideas and research "
+        "when current market context could change the thesis. Use review_positions when open trade theses need to be checked against current conditions. Use strategy_ideas and research "
         "for web-informed candidate generation, backtesting, and strategy promotion. If market "
         "is closed, do not request order placement; research, search, or wait instead. Prefer "
         "simple, useful actions over busywork."
@@ -312,6 +315,9 @@ def summarize_tool_result(result: Dict[str, Any]) -> str:
 
     if tool == "strategy_ideas":
         return f"strategy_ideas: {result.get('reply') or result.get('ideas') or 'completed'}"
+
+    if tool == "review_positions":
+        return f"review_positions: {result.get('reply') or result.get('review') or 'completed'}"
 
     if tool == "autonomy_cycle":
         autonomy = result.get("autonomy") or result
