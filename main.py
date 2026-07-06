@@ -29,7 +29,7 @@ from storage import (
     utc_now,
 )
 from strategy import run_once
-from trade_memory import load_trade_thesis_records, open_trade_theses
+from trade_memory import close_missing_position_theses, load_trade_thesis_records, open_trade_theses
 from v4_brain import llm_parse, llm_reply, rule_parse
 
 
@@ -967,16 +967,27 @@ def market_review_positions() -> Dict[str, Any]:
 @app.get("/theses", dependencies=[Depends(require_auth)])
 def trade_theses(limit: int = 100) -> Dict[str, Any]:
     limit = max(1, min(limit, 500))
+    client = alpaca()
+    raw_state = api_result(client.state)
+    live_symbols = [
+        str(position.get("symbol", "")).upper()
+        for position in raw_state.get("positions") or []
+    ]
+    reconciled = close_missing_position_theses(settings.data_dir, live_symbols)
+    for review in reconciled:
+        append_event(settings.data_dir, "exit_review", review)
     open_rows = open_trade_theses(settings.data_dir, limit=limit)
     records = load_trade_thesis_records(settings.data_dir, limit=limit)
     return {
         "ok": True,
         "reply": (
             f"Loaded {len(open_rows)} open trade thesis record(s) "
-            f"and {len(records)} recent thesis ledger record(s)."
+            f"and {len(records)} recent thesis ledger record(s). "
+            f"Reconciled {len(reconciled)} stale thesis record(s)."
         ),
         "open_trade_theses": open_rows,
         "records": records,
+        "reconciled": reconciled,
     }
 
 

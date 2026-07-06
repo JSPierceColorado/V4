@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from storage import ensure_data_dirs, load_events, utc_now
 
@@ -245,3 +245,41 @@ def build_exit_review(
 
 def record_exit_review(data_dir: str, review: Dict[str, Any]) -> Dict[str, Any]:
     return _write_record(data_dir, review)
+
+
+def close_missing_position_theses(
+    data_dir: str,
+    live_symbols: Iterable[str],
+) -> List[Dict[str, Any]]:
+    live = {str(symbol or "").upper() for symbol in live_symbols if str(symbol or "").strip()}
+    closed_reviews = []
+    for thesis in open_trade_theses(data_dir, limit=500):
+        symbol = str(thesis.get("symbol", "")).upper()
+        if not symbol or symbol in live:
+            continue
+        review = {
+            "type": "exit_review",
+            "thesis_id": thesis.get("thesis_id"),
+            "symbol": symbol,
+            "status": "closed",
+            "opened_at": thesis.get("opened_at"),
+            "closed_at": utc_now(),
+            "exit_reason": "position_missing",
+            "plpc": None,
+            "position_snapshot": {},
+            "order": None,
+            "exit_record": {
+                "symbol": symbol,
+                "reason": "position_missing",
+                "note": "Alpaca no longer reports this position; thesis closed during reconciliation.",
+            },
+            "entry_thesis_summary": {
+                "entry_reason": thesis.get("entry_reason"),
+                "strategy": thesis.get("strategy"),
+                "candidate_features": thesis.get("candidate_features"),
+                "research_context": thesis.get("research_context"),
+            },
+            "lesson": "Position was no longer present during reconciliation.",
+        }
+        closed_reviews.append(record_exit_review(data_dir, review))
+    return closed_reviews

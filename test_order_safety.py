@@ -25,6 +25,17 @@ def test_duplicate_order_reason_blocks_existing_long_buy() -> None:
     assert reason == "MSFT is already held; skipping duplicate buy entry."
 
 
+def test_duplicate_order_reason_allows_reentry_after_position_is_gone() -> None:
+    state = {
+        "positions": [],
+        "open_orders": [],
+    }
+
+    reason = duplicate_order_reason(state, symbol="MSFT", side="buy")
+
+    assert reason is None
+
+
 def test_run_once_skips_duplicate_latest_upload_buy() -> None:
     upload = UploadRecord(
         upload_id="up_test",

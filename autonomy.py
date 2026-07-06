@@ -32,6 +32,7 @@ from storage import append_event, utc_now
 from trade_memory import (
     build_entry_thesis,
     build_exit_review,
+    close_missing_position_theses,
     open_trade_theses,
     record_entry_thesis,
     record_exit_review,
@@ -365,9 +366,12 @@ class AutonomyEngine:
         positions = state.get("positions") or []
         open_orders = state.get("open_orders") or []
         evolution_state = load_evolution_state(self.settings.data_dir)
+        live_symbols = [str(pos.get("symbol", "")).upper() for pos in positions]
+        for review in close_missing_position_theses(self.settings.data_dir, live_symbols):
+            append_event(self.settings.data_dir, "exit_review", review)
         remove_missing_positions(
             evolution_state,
-            [str(pos.get("symbol", "")).upper() for pos in positions],
+            live_symbols,
         )
         local_buying_power = _float(account.get("buying_power"))
         held = {str(pos.get("symbol", "")).upper() for pos in positions}

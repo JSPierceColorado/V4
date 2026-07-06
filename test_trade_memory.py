@@ -1,6 +1,7 @@
 from trade_memory import (
     build_entry_thesis,
     build_exit_review,
+    close_missing_position_theses,
     find_open_thesis,
     open_trade_theses,
     record_entry_thesis,
@@ -61,3 +62,26 @@ def test_trade_thesis_ledger_reconstructs_open_and_closed_theses(tmp_path) -> No
 
     assert open_trade_theses(str(tmp_path)) == []
     assert review["entry_thesis_summary"]["entry_reason"]
+
+
+def test_missing_position_reconciliation_closes_stale_thesis(tmp_path) -> None:
+    thesis = build_entry_thesis(
+        str(tmp_path),
+        symbol="AAPL",
+        strategy={"id": "s1"},
+        candidate={"symbol": "AAPL", "score": 70},
+        adjusted_score=70,
+        notional=25,
+        order={"id": "buy-1"},
+        market_clock={"is_open": True},
+        account={},
+        research_state={"active_strategy_id": "s1"},
+        source="autonomy_cycle",
+    )
+    record_entry_thesis(str(tmp_path), thesis)
+
+    reviews = close_missing_position_theses(str(tmp_path), live_symbols=[])
+
+    assert len(reviews) == 1
+    assert reviews[0]["exit_reason"] == "position_missing"
+    assert open_trade_theses(str(tmp_path)) == []
