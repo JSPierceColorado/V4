@@ -140,6 +140,31 @@ def test_screener_returns_partial_result_on_rate_limit() -> None:
     assert result["warnings"]
 
 
+
+def test_screener_skips_transient_upstream_data_errors() -> None:
+    class FakeAlpaca:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stock_bars(self, symbols, *, start):
+            self.calls += 1
+            if self.calls == 1:
+                raise AlpacaError('GET /v2/stocks/bars failed status=502 body={"message":"upstream error"}')
+            bars = [
+                {"c": 10 + index * 0.1, "v": 250000}
+                for index in range(30)
+            ]
+            return {"bars": {symbol: list(bars) for symbol in symbols}}
+
+    symbols = [f"A{index:02d}" for index in range(51)]
+    result = screen_symbols(FakeAlpaca(), symbols)
+
+    assert result["ok"] is True
+    assert result["data_errors"] == 1
+    assert result["warnings"]
+    assert result["symbols_checked"] == 51
+    assert len(result["candidates"]) == 1
+
 def test_autonomy_start_returns_status_without_deadlock(monkeypatch) -> None:
     settings = load_settings()
     engine = AutonomyEngine(settings)

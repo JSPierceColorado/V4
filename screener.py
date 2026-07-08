@@ -7,6 +7,30 @@ from typing import Any, Dict, Iterable, List
 from alpaca_rest import AlpacaError, AlpacaRest
 
 
+def _is_rate_limit_error(message: str) -> bool:
+    lowered = message.lower()
+    return "429" in lowered or "too many requests" in lowered or "rate limit" in lowered
+
+
+def _is_transient_data_error(message: str) -> bool:
+    lowered = message.lower()
+    transient_markers = (
+        "status=500",
+        "status=502",
+        "status=503",
+        "status=504",
+        "upstream error",
+        "bad gateway",
+        "service unavailable",
+        "gateway timeout",
+        "timeout",
+        "temporarily unavailable",
+        "connection aborted",
+        "connection reset",
+    )
+    return any(marker in lowered for marker in transient_markers)
+
+
 def _float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
@@ -110,16 +134,21 @@ def screen_symbols(
     rejected = 0
     warnings: List[str] = []
     rate_limited = False
+    data_errors = 0
     for chunk in _chunks(unique, 50):
         try:
             response = alpaca.stock_bars(chunk, start=start)
         except AlpacaError as exc:
             message = str(exc)
-            if "429" not in message and "too many requests" not in message.lower():
-                raise
-            rate_limited = True
-            warnings.append(message)
-            break
+            if _is_rate_limit_error(message):
+                rate_limited = True
+                warnings.append(message)
+                break
+            if _is_transient_data_error(message):
+                data_errors += 1
+                warnings.append(message)
+                continue
+            raise
         bars_by_symbol = response.get("bars") or {}
         for symbol, bars in bars_by_symbol.items():
             if not bars:
@@ -185,6 +214,7 @@ def screen_symbols(
         "screen_offset": normalized_offset,
         "next_screen_offset": next_offset,
         "rate_limited": rate_limited,
+        "data_errors": data_errors,
         "warnings": warnings,
         "rejected": rejected,
         "candidates": selected,
