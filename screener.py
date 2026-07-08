@@ -4,7 +4,10 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Any, Dict, Iterable, List
 
-from alpaca_rest import AlpacaError, AlpacaRest
+import alpaca_rest as _alpaca_rest
+
+AlpacaRest = _alpaca_rest.AlpacaRest
+AlpacaError = getattr(_alpaca_rest, "AlpacaError", RuntimeError)
 
 
 def _is_rate_limit_error(message: str) -> bool:

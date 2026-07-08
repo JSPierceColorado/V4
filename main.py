@@ -6,7 +6,10 @@ from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from alpaca_rest import AlpacaError, AlpacaRest
+import alpaca_rest as _alpaca_rest
+
+AlpacaRest = _alpaca_rest.AlpacaRest
+AlpacaError = getattr(_alpaca_rest, "AlpacaError", RuntimeError)
 from autonomy import AutonomyEngine
 from config import Settings, load_settings
 from ingest import parse_upload
