@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 
 from agent_operator import (
     build_operator_context,
+    enforce_autonomy_guardrails,
     journal_operator_cycle,
     model_plan,
 )
@@ -213,7 +214,7 @@ class AutonomyEngine:
             state=state,
             autonomy_status=self.status(),
         )
-        plan = model_plan(self.settings, context)
+        plan = enforce_autonomy_guardrails(context, model_plan(self.settings, context))
         for action in plan.get("actions") or []:
             tool = action.get("tool")
             args = action.get("args") or {}
