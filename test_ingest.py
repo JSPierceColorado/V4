@@ -52,7 +52,7 @@ def test_autonomy_defaults_are_live_unbounded_all_symbols(monkeypatch) -> None:
     assert settings.autonomy_max_orders_per_cycle == 0
     assert settings.autonomy_max_positions == 0
     assert settings.autonomy_position_buying_power_pct == 0.02
-    assert settings.autonomy_screen_symbols_per_cycle == 100
+    assert settings.autonomy_screen_symbols_per_cycle == 0
     assert settings.autonomy_research_enabled is True
     assert settings.autonomy_research_interval_seconds == 21600
     assert settings.autonomy_research_symbols_per_run == 0
@@ -402,3 +402,112 @@ def test_autonomy_skips_orders_when_market_is_closed(monkeypatch, tmp_path) -> N
     assert result["actions"][0]["type"] == "paper_sell_exit"
     assert result["actions"][0]["skipped"] == "market_closed"
     assert "Market open: False" in result["summary"]
+
+
+def test_autonomy_uses_whole_share_qty_for_non_fractionable_assets(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    engine = AutonomyEngine(settings)
+    placed_orders = []
+
+    class FakeAlpaca:
+        def state(self):
+            return {
+                "account": {"buying_power": "8000"},
+                "positions": [],
+                "open_orders": [],
+            }
+
+        def asset(self, symbol):
+            return {"symbol": symbol, "fractionable": False}
+
+        def latest_trade(self, symbol):
+            return {"trade": {"p": 4.97}}
+
+        def place_order(self, **kwargs):
+            placed_orders.append(kwargs)
+            return {"id": "whole-share-order", **kwargs}
+
+    monkeypatch.setattr(
+        autonomy,
+        "screen_symbols",
+        lambda alpaca, symbols, **kwargs: {
+            "ok": True,
+            "symbols_checked": 1,
+            "rejected": 0,
+            "candidates": [
+                {
+                    "symbol": "CNTN",
+                    "close": 4.97,
+                    "score": 99,
+                }
+            ],
+        },
+    )
+
+    result = engine.run_cycle(FakeAlpaca())
+
+    assert result["ok"] is True
+    assert placed_orders == [
+        {
+            "symbol": "CNTN",
+            "side": "buy",
+            "qty": 32,
+            "order_type": "market",
+            "time_in_force": "day",
+            "extended_hours": False,
+        }
+    ]
+    assert result["actions"][0]["order_sizing"]["method"] == "whole_share"
+
+
+def test_autonomy_retries_notional_rejection_as_whole_share(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    settings = load_settings()
+    engine = AutonomyEngine(settings)
+    placed_orders = []
+
+    class FakeAlpaca:
+        def state(self):
+            return {
+                "account": {"buying_power": "8000"},
+                "positions": [],
+                "open_orders": [],
+            }
+
+        def asset(self, symbol):
+            raise AlpacaError("temporary asset lookup error")
+
+        def latest_trade(self, symbol):
+            return {"trade": {"p": 4.97}}
+
+        def place_order(self, **kwargs):
+            placed_orders.append(kwargs)
+            if kwargs.get("notional") is not None:
+                raise AlpacaError('POST /v2/orders failed status=403 body={"message":"asset \\"CNTN\\" is not fractionable"}')
+            return {"id": "retried-whole-share-order", **kwargs}
+
+    monkeypatch.setattr(
+        autonomy,
+        "screen_symbols",
+        lambda alpaca, symbols, **kwargs: {
+            "ok": True,
+            "symbols_checked": 1,
+            "rejected": 0,
+            "candidates": [
+                {
+                    "symbol": "CNTN",
+                    "close": 4.97,
+                    "score": 99,
+                }
+            ],
+        },
+    )
+
+    result = engine.run_cycle(FakeAlpaca())
+
+    assert result["ok"] is True
+    assert placed_orders[0]["notional"] == 160.0
+    assert placed_orders[1]["qty"] == 32
+    assert result["actions"][0]["initial_error"]
+    assert result["actions"][0]["order"]["id"] == "retried-whole-share-order"

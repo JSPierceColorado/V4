@@ -163,7 +163,7 @@ def load_settings() -> Settings:
             "AUTONOMY_POSITION_BUYING_POWER_PCT", 0.02
         ),
         autonomy_screen_symbols_per_cycle=env_int(
-            "AUTONOMY_SCREEN_SYMBOLS_PER_CYCLE", 100
+            "AUTONOMY_SCREEN_SYMBOLS_PER_CYCLE", 0
         ),
         autonomy_research_enabled=env_bool("AUTONOMY_RESEARCH_ENABLED", True),
         autonomy_research_interval_seconds=env_int(

@@ -94,6 +94,9 @@ class AlpacaRest:
             params={"status": status, "asset_class": asset_class},
         )
 
+    def asset(self, symbol: str) -> Dict[str, Any]:
+        return self.trading("GET", f"/v2/assets/{symbol.upper()}")
+
     def active_tradable_us_equity_symbols(self) -> list[str]:
         assets = self.assets(status="active", asset_class="us_equity")
         symbols = []

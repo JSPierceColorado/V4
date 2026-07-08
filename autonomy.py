@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -50,6 +51,104 @@ def _float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+
+
+def _is_not_fractionable_error(message: str) -> bool:
+    lowered = message.lower()
+    return "not fractionable" in lowered or "fractionable" in lowered and "403" in lowered
+
+
+def _latest_trade_price(alpaca: AlpacaRest, symbol: str, fallback: float) -> tuple[float, str | None]:
+    try:
+        latest = alpaca.latest_trade(symbol)
+        trade = latest.get("trade") or latest.get("last") or latest
+        price = _float(trade.get("p") or trade.get("price"), fallback)
+        if price > 0:
+            return price, "latest_trade"
+    except Exception as exc:  # noqa: BLE001 - price refresh is best-effort only
+        return fallback, f"latest_trade_unavailable: {exc}"
+    return fallback, "candidate_close"
+
+
+def _whole_share_buy_order_args(
+    alpaca: AlpacaRest,
+    candidate: Dict[str, Any],
+    requested_notional: float,
+    time_in_force: str,
+) -> tuple[Dict[str, Any] | None, Dict[str, Any]]:
+    symbol = str(candidate.get("symbol", "")).upper()
+    fallback_price = _float(candidate.get("close"))
+    ref_price, price_source = _latest_trade_price(alpaca, symbol, fallback_price)
+    if ref_price <= 0:
+        return None, {
+            "method": "whole_share",
+            "skipped": "no_valid_reference_price",
+            "requested_notional": requested_notional,
+        }
+    qty = math.floor(requested_notional / ref_price)
+    if qty < 1:
+        return None, {
+            "method": "whole_share",
+            "skipped": "requested_notional_below_one_share",
+            "requested_notional": requested_notional,
+            "reference_price": round(ref_price, 4),
+            "price_source": price_source,
+        }
+    return {
+        "symbol": symbol,
+        "side": "buy",
+        "qty": qty,
+        "order_type": "market",
+        "time_in_force": time_in_force,
+        "extended_hours": False,
+    }, {
+        "method": "whole_share",
+        "requested_notional": requested_notional,
+        "reference_price": round(ref_price, 4),
+        "estimated_notional": round(qty * ref_price, 2),
+        "price_source": price_source,
+    }
+
+
+def _buy_order_args_for_candidate(
+    alpaca: AlpacaRest,
+    candidate: Dict[str, Any],
+    requested_notional: float,
+    time_in_force: str,
+) -> tuple[Dict[str, Any] | None, Dict[str, Any]]:
+    symbol = str(candidate.get("symbol", "")).upper()
+    sizing: Dict[str, Any] = {"requested_notional": requested_notional}
+    try:
+        asset = alpaca.asset(symbol)
+        sizing["asset_fractionable"] = bool(asset.get("fractionable", False))
+        sizing["asset_marginable"] = bool(asset.get("marginable", False))
+        sizing["asset_shortable"] = bool(asset.get("shortable", False))
+    except Exception as exc:  # noqa: BLE001 - missing asset metadata should not block trading
+        sizing["asset_lookup_warning"] = str(exc)
+        sizing["method"] = "notional_assumed_fractionable"
+        return {
+            "symbol": symbol,
+            "side": "buy",
+            "notional": requested_notional,
+            "order_type": "market",
+            "time_in_force": time_in_force,
+            "extended_hours": False,
+        }, sizing
+
+    if not sizing.get("asset_fractionable"):
+        return _whole_share_buy_order_args(alpaca, candidate, requested_notional, time_in_force)
+
+    sizing["method"] = "notional_fractional"
+    return {
+        "symbol": symbol,
+        "side": "buy",
+        "notional": requested_notional,
+        "order_type": "market",
+        "time_in_force": time_in_force,
+        "extended_hours": False,
+    }, sizing
 
 
 def _age_days(opened_at: Any) -> float:
@@ -624,18 +723,16 @@ class AutonomyEngine:
                 continue
             if local_buying_power <= 1:
                 break
-            notional = round(
+            requested_notional = round(
                 max(1.0, local_buying_power * self.settings.autonomy_position_buying_power_pct),
                 2,
             )
-            order_args = {
-                "symbol": symbol,
-                "side": "buy",
-                "notional": notional,
-                "order_type": "market",
-                "time_in_force": self.settings.default_time_in_force,
-                "extended_hours": False,
-            }
+            order_args, sizing = _buy_order_args_for_candidate(
+                alpaca,
+                candidate,
+                requested_notional,
+                self.settings.default_time_in_force,
+            )
             action: Dict[str, Any] = {
                 "type": "paper_buy_candidate",
                 "strategy": strategy,
@@ -643,18 +740,59 @@ class AutonomyEngine:
                 "adjusted_score": adjusted_score(candidate, strategy),
                 "market_open": market_open,
                 "order_args": order_args,
+                "order_sizing": sizing,
                 "dry_run": self.settings.autonomy_dry_run,
             }
+            if order_args is None:
+                action["skipped"] = sizing.get("skipped") or "no_valid_order_size"
+                actions.append(action)
+                continue
+
+            order_notional_estimate = _float(
+                order_args.get("notional"),
+                _float(sizing.get("estimated_notional"), requested_notional),
+            )
+            order_submitted = False
             if not self.settings.autonomy_dry_run:
                 try:
                     action["order"] = alpaca.place_order(**order_args)
+                    order_submitted = True
+                except AlpacaError as exc:
+                    initial_error = str(exc)
+                    action["error"] = initial_error
+                    if order_args.get("notional") is not None and _is_not_fractionable_error(initial_error):
+                        retry_args, retry_sizing = _whole_share_buy_order_args(
+                            alpaca,
+                            candidate,
+                            requested_notional,
+                            self.settings.default_time_in_force,
+                        )
+                        action["initial_error"] = initial_error
+                        action["retry_order_args"] = retry_args
+                        action["retry_order_sizing"] = retry_sizing
+                        if retry_args is not None:
+                            try:
+                                action["order"] = alpaca.place_order(**retry_args)
+                                action.pop("error", None)
+                                order_args = retry_args
+                                action["order_args"] = retry_args
+                                action["order_sizing"] = retry_sizing
+                                order_notional_estimate = _float(
+                                    retry_sizing.get("estimated_notional"),
+                                    requested_notional,
+                                )
+                                order_submitted = True
+                            except AlpacaError as retry_exc:
+                                action["error"] = str(retry_exc)
+
+                if order_submitted:
                     entry_thesis = build_entry_thesis(
                         self.settings.data_dir,
                         symbol=symbol,
                         strategy=strategy,
                         candidate=candidate,
                         adjusted_score=adjusted_score(candidate, strategy),
-                        notional=notional,
+                        notional=order_notional_estimate,
                         order=action.get("order"),
                         market_clock=clock,
                         account=account,
@@ -671,7 +809,7 @@ class AutonomyEngine:
                         symbol=symbol,
                         strategy=strategy,
                         candidate=candidate,
-                        notional=notional,
+                        notional=order_notional_estimate,
                     )
                     evolution_state["positions"][symbol]["thesis_id"] = entry_thesis["thesis_id"]
                     evolution_state["positions"][symbol]["entry_thesis_summary"] = {
@@ -682,9 +820,7 @@ class AutonomyEngine:
                             "max_hold_days": strategy.get("max_hold_days"),
                         },
                     }
-                    local_buying_power = max(0.0, local_buying_power - notional)
-                except AlpacaError as exc:
-                    action["error"] = str(exc)
+                    local_buying_power = max(0.0, local_buying_power - order_notional_estimate)
             entry_actions.append(action)
             actions.append(action)
 
@@ -698,7 +834,10 @@ class AutonomyEngine:
                 f"Autonomy screened {screen.get('symbols_checked', 0)} symbols, "
                 f"found {len(screen.get('candidates', []))} candidates, "
                 f"prepared {len(exit_actions)} exit(s) and "
-                f"{len(entry_actions)} entry action(s). "
+                f"{len(entry_actions)} entry action(s) "
+                f"({sum(1 for action in entry_actions if action.get('order'))} submitted, "
+                f"{sum(1 for action in entry_actions if action.get('error'))} error(s), "
+                f"{sum(1 for action in actions if action.get('type') == 'paper_buy_candidate' and action.get('skipped'))} skipped). "
                 f"Market open: {market_open}. "
                 f"Dry run: {self.settings.autonomy_dry_run}."
             ),
