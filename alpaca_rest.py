@@ -72,6 +72,13 @@ class AlpacaRest:
     def clock(self) -> Dict[str, Any]:
         return self.trading("GET", "/v2/clock")
 
+    def calendar(self, *, start: str, end: str) -> Any:
+        return self.trading(
+            "GET",
+            "/v2/calendar",
+            params={"start": start, "end": end},
+        )
+
     def positions(self) -> Any:
         return self.trading("GET", "/v2/positions")
 

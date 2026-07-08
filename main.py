@@ -11,6 +11,7 @@ from autonomy import AutonomyEngine
 from config import Settings, load_settings
 from ingest import parse_upload
 from metrics import build_metrics
+from market_clock import normalize_market_clock
 from market_intel import market_brief as build_market_brief
 from market_intel import position_review as build_position_review
 from market_intel import strategy_ideas as build_strategy_ideas
@@ -858,7 +859,8 @@ def state() -> Dict[str, Any]:
 @app.get("/clock", dependencies=[Depends(require_auth)])
 def clock() -> Dict[str, Any]:
     client = alpaca()
-    result = api_result(client.clock)
+    raw_result = api_result(client.clock)
+    result = normalize_market_clock(client, raw_result)
     append_event(settings.data_dir, "clock", {"ok": True, "clock": result})
     return {"ok": True, "reply": summarize_clock(result), "clock": result}
 

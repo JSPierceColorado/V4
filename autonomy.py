@@ -12,6 +12,7 @@ from agent_operator import (
     model_plan,
 )
 from alpaca_rest import AlpacaError, AlpacaRest
+from market_clock import get_market_clock, is_market_open
 from config import Settings
 from evolution import (
     active_strategy,
@@ -75,23 +76,11 @@ def _seconds_since(timestamp: Any) -> float:
 
 
 def _market_clock(alpaca: AlpacaRest, state: Dict[str, Any]) -> Dict[str, Any]:
-    clock = state.get("clock")
-    if isinstance(clock, dict):
-        return clock
-    if not hasattr(alpaca, "clock"):
-        return {"is_open": True, "source": "test_default"}
-    try:
-        return alpaca.clock()
-    except AlpacaError as exc:
-        return {
-            "is_open": False,
-            "error": str(exc),
-            "source": "clock_error",
-        }
+    return get_market_clock(alpaca, state)
 
 
 def _is_market_open(clock: Dict[str, Any]) -> bool:
-    return bool(clock.get("is_open") is True)
+    return is_market_open(clock)
 
 
 @dataclass
@@ -218,6 +207,7 @@ class AutonomyEngine:
                 )
 
         state = alpaca.state()
+        state["clock"] = _market_clock(alpaca, state)
         context = build_operator_context(
             self.settings,
             state=state,
