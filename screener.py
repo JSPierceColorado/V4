@@ -109,8 +109,35 @@ def screen_symbols(
     max_symbols_per_cycle: int = 0,
     offset: int = 0,
 ) -> Dict[str, Any]:
+    warnings: List[str] = []
+    rate_limited = False
+    data_errors = 0
+
     if symbols is None:
-        symbols = alpaca.active_tradable_us_equity_symbols()
+        try:
+            symbols = alpaca.active_tradable_us_equity_symbols()
+        except AlpacaError as exc:
+            message = str(exc)
+            if _is_rate_limit_error(message):
+                rate_limited = True
+                warnings.append(f"Asset universe unavailable due to Alpaca rate limit: {message}")
+            elif _is_transient_data_error(message):
+                data_errors += 1
+                warnings.append(f"Asset universe unavailable due to transient Alpaca error: {message}")
+            else:
+                warnings.append(f"Asset universe unavailable: {message}")
+            return {
+                "ok": True,
+                "universe_symbols": 0,
+                "symbols_checked": 0,
+                "screen_offset": 0,
+                "next_screen_offset": 0,
+                "rate_limited": rate_limited,
+                "data_errors": data_errors,
+                "warnings": warnings,
+                "rejected": 0,
+                "candidates": [],
+            }
 
     unique = []
     seen = set()
@@ -132,9 +159,6 @@ def screen_symbols(
     start = (datetime.now(timezone.utc) - timedelta(days=390)).date().isoformat()
     candidates: List[Dict[str, Any]] = []
     rejected = 0
-    warnings: List[str] = []
-    rate_limited = False
-    data_errors = 0
     for chunk in _chunks(unique, 50):
         try:
             response = alpaca.stock_bars(chunk, start=start)

@@ -1014,10 +1014,11 @@ def autonomy_stop() -> Dict[str, Any]:
 
 @app.post("/autonomy/cycle", dependencies=[Depends(require_auth)])
 def autonomy_cycle() -> Dict[str, Any]:
+    # This endpoint is the deterministic trading engine. Keep it independent from
+    # the OpenAI-driven operator so "run autonomous cycle" can be used as a
+    # reliable diagnostic and paper-trading path even when the operator planner is
+    # disabled, slow, or having upstream/API trouble.
     client = alpaca()
-    if settings.agent_operator_enabled:
-        result = api_result(lambda: autonomy_engine.run_operator_cycle(client))
-        return {"ok": True, "reply": result["summary"], "operator": result}
     result = api_result(lambda: autonomy_engine.run_cycle(client))
     return {"ok": True, "reply": result["summary"], "autonomy": result}
 
