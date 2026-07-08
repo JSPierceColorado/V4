@@ -5,6 +5,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from config import Settings
+from market_clock import is_market_open
 from evolution import load_evolution_state, strategy_snapshot
 from market_intel import market_brief, position_review, strategy_ideas, symbol_research
 from storage import append_event, load_events, utc_now
@@ -158,12 +159,13 @@ def build_operator_context(
 def fallback_plan(context: Dict[str, Any]) -> Dict[str, Any]:
     clock = (context.get("state") or {}).get("clock") or {}
     status = context.get("autonomy_status") or {}
-    market_open = bool(clock.get("is_open") is True)
+    market_open = is_market_open(clock)
     if status.get("research_enabled") and not status.get("last_research_at"):
-        return {
+        plan = {
             "rationale": "No research result is recorded yet, so research should run before more trading.",
             "actions": [{"tool": "research", "args": {}, "reason": "seed active strategy"}],
         }
+        return enforce_autonomy_guardrails(context, plan)
     if market_open:
         return {
             "rationale": "Market is open, so run the clock-aware trading cycle.",
@@ -173,6 +175,67 @@ def fallback_plan(context: Dict[str, Any]) -> Dict[str, Any]:
         "rationale": "Market is closed and no research is immediately required.",
         "actions": [{"tool": "wait", "args": {}, "reason": "market closed"}],
     }
+
+
+def _autonomy_action(reason: str) -> Dict[str, Any]:
+    return {"tool": "autonomy_cycle", "args": {}, "reason": reason}
+
+
+def enforce_autonomy_guardrails(
+    context: Dict[str, Any],
+    plan: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Make market-open operator plans prove no live setup exists before waiting.
+
+    The LLM operator can sound prudent while doing only review_positions -> wait on a
+    flat book. That never asks the deterministic trading engine to screen symbols.
+    During regular market hours the clock-aware autonomy cycle is the thing that
+    manages exits, screens for entries, applies thresholds, enforces sizing, and then
+    either prepares/sends orders or returns a concrete no-candidate reason.
+    """
+    clock = (context.get("state") or {}).get("clock") or {}
+    if not is_market_open(clock):
+        return plan
+
+    raw_actions = plan.get("actions") or []
+    actions = [dict(action) for action in raw_actions if isinstance(action, dict)]
+    if any(action.get("tool") == "autonomy_cycle" for action in actions):
+        plan["actions"] = actions[:3]
+        return plan
+
+    forced = _autonomy_action(
+        "market is open; run deterministic entry/exit evaluation before any wait"
+    )
+    replaced_wait = False
+    for index, action in enumerate(actions):
+        if action.get("tool") == "wait":
+            actions[index] = forced
+            replaced_wait = True
+            break
+
+    if not actions:
+        actions = [forced]
+    elif not replaced_wait:
+        if len(actions) < 3:
+            actions.append(forced)
+        else:
+            actions[-1] = forced
+
+    plan = dict(plan)
+    plan["actions"] = actions[:3]
+    guardrails = list(plan.get("guardrails") or [])
+    guardrails.append(
+        "market_open_requires_autonomy_cycle_before_wait"
+    )
+    plan["guardrails"] = guardrails
+    rationale = plan.get("rationale") or ""
+    if "Autonomy guardrail" not in rationale:
+        plan["rationale"] = (
+            f"{rationale} Autonomy guardrail: market is open, so a wait-only or "
+            "review-only plan must run autonomy_cycle first to screen live candidates "
+            "and manage exits."
+        ).strip()
+    return plan
 
 
 def model_plan(settings: Settings, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -196,8 +259,11 @@ def model_plan(settings: Settings, context: Dict[str, Any]) -> Dict[str, Any]:
         "objects with keys tool, args, reason. Allowed tools: research, autonomy_cycle, "
         "market_brief, symbol_research, strategy_ideas, review_positions, screen, metrics, clock, state, wait. Keep to at most 3 actions. "
         "Use autonomy_cycle for paper orders; it enforces market clock, exits, screening, "
-        "2% buying-power sizing, and strategy rules. Use market_brief or symbol_research "
-        "when current market context could change the thesis. Use review_positions when open trade theses need to be checked against current conditions. Use strategy_ideas and research "
+        "2% buying-power sizing, strategy rules, max positions, and no-candidate decisions. "
+        "If the market is open, do not choose wait until autonomy_cycle has run in the current plan; "
+        "a flat book with no open orders is a reason to screen for entries, not a reason to wait. "
+        "Use market_brief or symbol_research when current market context could change the thesis. "
+        "Use review_positions when open trade theses need to be checked against current conditions. Use strategy_ideas and research "
         "for web-informed candidate generation, backtesting, and strategy promotion. If market "
         "is closed, do not request order placement; research, search, or wait instead. Prefer "
         "simple, useful actions over busywork."
@@ -225,11 +291,14 @@ def model_plan(settings: Settings, context: Dict[str, Any]) -> Dict[str, Any]:
                 )
         if not actions:
             raise ValueError("operator returned no allowed actions")
-        return {
-            "source": "openai",
-            "rationale": parsed.get("rationale") or "",
-            "actions": actions[:3],
-        }
+        return enforce_autonomy_guardrails(
+            context,
+            {
+                "source": "openai",
+                "rationale": parsed.get("rationale") or "",
+                "actions": actions[:3],
+            },
+        )
     except Exception as exc:
         plan = fallback_plan(context)
         plan["source"] = "fallback_error"

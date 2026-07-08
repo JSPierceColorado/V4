@@ -8,7 +8,6 @@ from typing import Any, Dict, Optional
 
 from agent_operator import (
     build_operator_context,
-    enforce_autonomy_guardrails,
     journal_operator_cycle,
     model_plan,
 )
@@ -82,6 +81,65 @@ def _market_clock(alpaca: AlpacaRest, state: Dict[str, Any]) -> Dict[str, Any]:
 
 def _is_market_open(clock: Dict[str, Any]) -> bool:
     return is_market_open(clock)
+
+
+def _operator_autonomy_action(reason: str) -> Dict[str, Any]:
+    return {"tool": "autonomy_cycle", "args": {}, "reason": reason}
+
+
+def _enforce_operator_autonomy_guardrails(
+    context: Dict[str, Any],
+    plan: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Prevent market-open operator plans from waiting before live evaluation.
+
+    This lives in autonomy.py to avoid a fragile cross-module import during deploy.
+    During market hours the deterministic autonomy cycle must run before wait-only
+    or review-only plans are allowed, because that cycle screens live symbols,
+    manages exits, enforces sizing, and returns a concrete no-candidate reason.
+    """
+    clock = (context.get("state") or {}).get("clock") or {}
+    if not is_market_open(clock):
+        return plan
+
+    raw_actions = plan.get("actions") or []
+    actions = [dict(action) for action in raw_actions if isinstance(action, dict)]
+    if any(action.get("tool") == "autonomy_cycle" for action in actions):
+        patched = dict(plan)
+        patched["actions"] = actions[:3]
+        return patched
+
+    forced = _operator_autonomy_action(
+        "market is open; run deterministic entry/exit evaluation before any wait"
+    )
+    replaced_wait = False
+    for index, action in enumerate(actions):
+        if action.get("tool") == "wait":
+            actions[index] = forced
+            replaced_wait = True
+            break
+
+    if not actions:
+        actions = [forced]
+    elif not replaced_wait:
+        if len(actions) < 3:
+            actions.append(forced)
+        else:
+            actions[-1] = forced
+
+    patched = dict(plan)
+    patched["actions"] = actions[:3]
+    guardrails = list(patched.get("guardrails") or [])
+    guardrails.append("market_open_requires_autonomy_cycle_before_wait")
+    patched["guardrails"] = guardrails
+    rationale = patched.get("rationale") or ""
+    if "Autonomy guardrail" not in rationale:
+        patched["rationale"] = (
+            f"{rationale} Autonomy guardrail: market is open, so a wait-only or "
+            "review-only plan must run autonomy_cycle first to screen live candidates "
+            "and manage exits."
+        ).strip()
+    return patched
 
 
 @dataclass
@@ -214,7 +272,7 @@ class AutonomyEngine:
             state=state,
             autonomy_status=self.status(),
         )
-        plan = enforce_autonomy_guardrails(context, model_plan(self.settings, context))
+        plan = _enforce_operator_autonomy_guardrails(context, model_plan(self.settings, context))
         for action in plan.get("actions") or []:
             tool = action.get("tool")
             args = action.get("args") or {}
