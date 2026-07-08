@@ -4,7 +4,6 @@ from datetime import date, datetime, time, timezone
 from typing import Any, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from alpaca_rest import AlpacaError
 
 MARKET_TZ = ZoneInfo("America/New_York")
 
@@ -72,10 +71,8 @@ def _calendar_session_state(alpaca: Any, *, now: Optional[datetime] = None) -> T
 
     try:
         rows = alpaca.calendar(start=day, end=day)
-    except AlpacaError as exc:
-        return None, {"calendar_source": "alpaca_calendar_error", "calendar_error": str(exc)}
     except Exception as exc:
-        return None, {"calendar_source": "calendar_error", "calendar_error": str(exc)}
+        return None, {"calendar_source": "alpaca_calendar_error", "calendar_error": str(exc)}
 
     if not rows:
         return False, {
@@ -168,7 +165,7 @@ def get_market_clock(alpaca: Any, state: Optional[Dict[str, Any]] = None) -> Dic
         else:
             try:
                 raw_clock = alpaca.clock()
-            except AlpacaError as exc:
+            except Exception as exc:
                 raw_clock = {
                     "is_open": None,
                     "clock_error": str(exc),
