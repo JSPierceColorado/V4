@@ -1,197 +1,158 @@
 from __future__ import annotations
 
-import json
-import re
-from typing import Any, Dict, List, Optional
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
+from agent_operator import (
+    build_operator_context,
+    journal_operator_cycle,
+    model_plan,
+)
+from alpaca_rest import AlpacaError, AlpacaRest
+from market_clock import get_market_clock, is_market_open
 from config import Settings
-from market_clock import is_market_open
-from evolution import load_evolution_state, strategy_snapshot
+from evolution import (
+    active_strategy,
+    adjusted_score,
+    evolve,
+    load_evolution_state,
+    remove_missing_positions,
+    save_evolution_state,
+    strategy_snapshot,
+    tag_entry,
+    tag_exit,
+)
+from metrics import build_metrics
 from market_intel import market_brief, position_review, strategy_ideas, symbol_research
-from storage import append_event, load_events, utc_now
-from trade_memory import open_trade_theses
-from v4_doctrine import STRATEGY_DSL_GUIDE, V4_DOCTRINE
+from research import run_research
+from screener import screen_symbols
+from storage import append_event, utc_now
+from trade_memory import (
+    build_entry_thesis,
+    build_exit_review,
+    close_missing_position_theses,
+    open_trade_theses,
+    record_entry_thesis,
+    record_exit_review,
+)
 
 
-ALLOWED_TOOLS = {
-    "research",
-    "market_brief",
-    "symbol_research",
-    "strategy_ideas",
-    "review_positions",
-    "autonomy_cycle",
-    "screen",
-    "metrics",
-    "clock",
-    "state",
-    "wait",
-}
-
-
-def _json_from_text(text: str) -> Optional[Dict[str, Any]]:
-    text = (text or "").strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?", "", text).strip()
-        text = re.sub(r"```$", "", text).strip()
+def _float(value: Any, default: float = 0.0) -> float:
     try:
-        value = json.loads(text)
-        return value if isinstance(value, dict) else None
-    except json.JSONDecodeError:
-        pass
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            value = json.loads(text[start : end + 1])
-            return value if isinstance(value, dict) else None
-        except json.JSONDecodeError:
-            return None
-    return None
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
-def _compact_state(state: Dict[str, Any]) -> Dict[str, Any]:
-    account = state.get("account") or {}
-    positions = state.get("positions") or []
-    open_orders = state.get("open_orders") or []
-    clock = state.get("clock") or {}
-    return {
-        "clock": clock,
-        "account": {
-            "status": account.get("status"),
-            "cash": account.get("cash"),
-            "buying_power": account.get("buying_power"),
-            "equity": account.get("equity"),
-            "portfolio_value": account.get("portfolio_value"),
-            "daytrading_buying_power": account.get("daytrading_buying_power"),
-        },
-        "positions": [
-            {
-                "symbol": pos.get("symbol"),
-                "qty": pos.get("qty"),
-                "market_value": pos.get("market_value"),
-                "unrealized_pl": pos.get("unrealized_pl"),
-                "unrealized_plpc": pos.get("unrealized_plpc"),
-            }
-            for pos in positions[:30]
-        ],
-        "open_orders": [
-            {
-                "symbol": order.get("symbol"),
-                "side": order.get("side"),
-                "qty": order.get("qty"),
-                "notional": order.get("notional"),
-                "status": order.get("status"),
-                "type": order.get("type"),
-            }
-            for order in open_orders[:30]
-        ],
-    }
+def _age_days(opened_at: Any) -> float:
+    if not opened_at:
+        return 0.0
+    try:
+        raw = str(opened_at).replace("Z", "+00:00")
+        opened = datetime.fromisoformat(raw)
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - opened).total_seconds() / 86400)
+    except ValueError:
+        return 0.0
 
 
-def _compact_autonomy_status(status: Dict[str, Any]) -> Dict[str, Any]:
-    last_result = status.get("last_result") or {}
-    last_operator = last_result.get("operator") or {}
-    return {
-        "running": status.get("running"),
-        "dry_run": status.get("dry_run"),
-        "interval_seconds": status.get("interval_seconds"),
-        "agent_operator_enabled": status.get("agent_operator_enabled"),
-        "research_enabled": status.get("research_enabled"),
-        "research_interval_seconds": status.get("research_interval_seconds"),
-        "last_started_at": status.get("last_started_at"),
-        "last_finished_at": status.get("last_finished_at"),
-        "last_error": status.get("last_error"),
-        "last_research_at": status.get("last_research_at"),
-        "last_research_error": status.get("last_research_error"),
-        "cycles": status.get("cycles"),
-        "last_summary": last_result.get("summary"),
-        "last_operator_plan": last_operator.get("plan"),
-    }
+def _seconds_since(timestamp: Any) -> float:
+    if not timestamp:
+        return 10**12
+    try:
+        raw = str(timestamp).replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
+    except ValueError:
+        return 10**12
 
 
-def build_operator_context(
-    settings: Settings,
-    *,
-    state: Dict[str, Any],
-    autonomy_status: Dict[str, Any],
-) -> Dict[str, Any]:
-    evolution_state = load_evolution_state(settings.data_dir)
-    return {
-        "timestamp": utc_now(),
-        "paper": settings.alpaca_paper,
-        "operator_policy": {
-            "paper_account_only": True,
-            "position_size_rule": (
-                f"{settings.autonomy_position_buying_power_pct:.2%} of Alpaca buying_power "
-                "for each new autonomous entry"
-            ),
-            "market_clock_required_for_orders": True,
-            "allowed_tools": sorted(ALLOWED_TOOLS),
-            "research_depth": {
-                "symbols_per_run": settings.autonomy_research_symbols_per_run,
-                "max_variants": settings.autonomy_research_max_variants,
-                "ai_strategy_lab_enabled": settings.autonomy_ai_strategy_lab_enabled,
-                "ai_strategy_ideas": settings.autonomy_ai_strategy_ideas,
-                "web_research_enabled": settings.autonomy_web_research_enabled,
-                "web_strategy_ideas": settings.autonomy_web_strategy_ideas,
-                "ai_variant_triage_enabled": settings.autonomy_ai_variant_triage_enabled,
-                "ai_variant_triage_target": settings.autonomy_ai_variant_triage_target,
-            },
-            "doctrine": V4_DOCTRINE,
-            "strategy_dsl": STRATEGY_DSL_GUIDE,
-            "notes": [
-                "Research/backtesting may run while market is closed.",
-                "Use market_brief, symbol_research, strategy_ideas, and review_positions to bring current web context into the research desk.",
-                "Autonomous order placement should use autonomy_cycle, which enforces market clock and sizing.",
-                "Prefer wait when market is closed and research is not due.",
-            ],
-        },
-        "state": _compact_state(state),
-        "autonomy_status": _compact_autonomy_status(autonomy_status),
-        "strategy": strategy_snapshot(evolution_state),
-        "open_trade_theses": open_trade_theses(settings.data_dir),
-        "last_research": evolution_state.get("last_research"),
-        "research_history": (evolution_state.get("research_history") or [])[-10:],
-        "recent_events": load_events(settings.data_dir, limit=12),
-    }
+def _market_clock(alpaca: AlpacaRest, state: Dict[str, Any]) -> Dict[str, Any]:
+    return get_market_clock(alpaca, state)
 
 
-def fallback_plan(context: Dict[str, Any]) -> Dict[str, Any]:
-    clock = (context.get("state") or {}).get("clock") or {}
-    status = context.get("autonomy_status") or {}
-    market_open = is_market_open(clock)
-    if status.get("research_enabled") and not status.get("last_research_at"):
-        plan = {
-            "rationale": "No research result is recorded yet, so research should run before more trading.",
-            "actions": [{"tool": "research", "args": {}, "reason": "seed active strategy"}],
-        }
-        return enforce_autonomy_guardrails(context, plan)
-    if market_open:
-        return {
-            "rationale": "Market is open, so run the clock-aware trading cycle.",
-            "actions": [{"tool": "autonomy_cycle", "args": {}, "reason": "manage exits and entries"}],
-        }
-    return {
-        "rationale": "Market is closed and no research is immediately required.",
-        "actions": [{"tool": "wait", "args": {}, "reason": "market closed"}],
-    }
+def _is_market_open(clock: Dict[str, Any]) -> bool:
+    return is_market_open(clock)
 
 
-def _autonomy_action(reason: str) -> Dict[str, Any]:
+def _operator_autonomy_action(reason: str) -> Dict[str, Any]:
     return {"tool": "autonomy_cycle", "args": {}, "reason": reason}
 
 
-def enforce_autonomy_guardrails(
+def _safe_alpaca_state(alpaca: AlpacaRest) -> tuple[Dict[str, Any], list[str], bool]:
+    """Read Alpaca state one endpoint at a time so a flaky endpoint does not 502 the UI.
+
+    Returns (state, warnings, safe_to_trade). Trading is unsafe unless account,
+    positions, and open orders were all read successfully. Clock is normalized
+    separately and can fall back through market_clock.
+    """
+    state: Dict[str, Any] = {}
+    warnings: list[str] = []
+    safe_to_trade = True
+
+    if not all(hasattr(alpaca, name) for name in ("account", "clock", "positions", "open_orders")):
+        try:
+            raw_state = alpaca.state()
+            return dict(raw_state or {}), [], True
+        except AlpacaError as exc:
+            return (
+                {"account": {}, "clock": {"is_open": None, "clock_error": str(exc)}, "positions": [], "open_orders": []},
+                [f"state_unavailable: {exc}"],
+                False,
+            )
+
+    try:
+        state["account"] = alpaca.account()
+    except AlpacaError as exc:
+        safe_to_trade = False
+        state["account"] = {}
+        warnings.append(f"account_unavailable: {exc}")
+
+    try:
+        state["clock"] = alpaca.clock()
+    except AlpacaError as exc:
+        state["clock"] = {
+            "is_open": None,
+            "clock_error": str(exc),
+            "clock_source": "alpaca_clock_error",
+        }
+        warnings.append(f"clock_unavailable: {exc}")
+
+    try:
+        state["positions"] = alpaca.positions()
+    except AlpacaError as exc:
+        safe_to_trade = False
+        state["positions"] = []
+        warnings.append(f"positions_unavailable: {exc}")
+
+    try:
+        state["open_orders"] = alpaca.open_orders()
+    except AlpacaError as exc:
+        safe_to_trade = False
+        state["open_orders"] = []
+        warnings.append(f"open_orders_unavailable: {exc}")
+
+    return state, warnings, safe_to_trade
+
+
+def _enforce_operator_autonomy_guardrails(
     context: Dict[str, Any],
     plan: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Make market-open operator plans prove no live setup exists before waiting.
+    """Prevent market-open operator plans from waiting before live evaluation.
 
-    The LLM operator can sound prudent while doing only review_positions -> wait on a
-    flat book. That never asks the deterministic trading engine to screen symbols.
-    During regular market hours the clock-aware autonomy cycle is the thing that
-    manages exits, screens for entries, applies thresholds, enforces sizing, and then
-    either prepares/sends orders or returns a concrete no-candidate reason.
+    This lives in autonomy.py to avoid a fragile cross-module import during deploy.
+    During market hours the deterministic autonomy cycle must run before wait-only
+    or review-only plans are allowed, because that cycle screens live symbols,
+    manages exits, enforces sizing, and returns a concrete no-candidate reason.
     """
     clock = (context.get("state") or {}).get("clock") or {}
     if not is_market_open(clock):
@@ -200,10 +161,11 @@ def enforce_autonomy_guardrails(
     raw_actions = plan.get("actions") or []
     actions = [dict(action) for action in raw_actions if isinstance(action, dict)]
     if any(action.get("tool") == "autonomy_cycle" for action in actions):
-        plan["actions"] = actions[:3]
-        return plan
+        patched = dict(plan)
+        patched["actions"] = actions[:3]
+        return patched
 
-    forced = _autonomy_action(
+    forced = _operator_autonomy_action(
         "market is open; run deterministic entry/exit evaluation before any wait"
     )
     replaced_wait = False
@@ -221,221 +183,532 @@ def enforce_autonomy_guardrails(
         else:
             actions[-1] = forced
 
-    plan = dict(plan)
-    plan["actions"] = actions[:3]
-    guardrails = list(plan.get("guardrails") or [])
-    guardrails.append(
-        "market_open_requires_autonomy_cycle_before_wait"
-    )
-    plan["guardrails"] = guardrails
-    rationale = plan.get("rationale") or ""
+    patched = dict(plan)
+    patched["actions"] = actions[:3]
+    guardrails = list(patched.get("guardrails") or [])
+    guardrails.append("market_open_requires_autonomy_cycle_before_wait")
+    patched["guardrails"] = guardrails
+    rationale = patched.get("rationale") or ""
     if "Autonomy guardrail" not in rationale:
-        plan["rationale"] = (
+        patched["rationale"] = (
             f"{rationale} Autonomy guardrail: market is open, so a wait-only or "
             "review-only plan must run autonomy_cycle first to screen live candidates "
             "and manage exits."
         ).strip()
-    return plan
+    return patched
 
 
-def model_plan(settings: Settings, context: Dict[str, Any]) -> Dict[str, Any]:
-    if not settings.openai_ready:
-        plan = fallback_plan(context)
-        plan["source"] = "fallback_no_openai"
-        return plan
+@dataclass
+class AutonomySnapshot:
+    running: bool
+    last_started_at: Optional[str] = None
+    last_finished_at: Optional[str] = None
+    last_error: Optional[str] = None
+    last_result: Optional[Dict[str, Any]] = None
+    last_research_at: Optional[str] = None
+    last_research_result: Optional[Dict[str, Any]] = None
+    last_research_error: Optional[str] = None
+    cycles: int = 0
 
-    try:
-        from openai import OpenAI
-    except ImportError:
-        plan = fallback_plan(context)
-        plan["source"] = "fallback_no_openai_package"
-        return plan
 
-    system = (
-        "You are the v4 Agent Operator for an Alpaca paper-trading account. "
-        "You are not chatting; you are deciding which internal tools to run now. "
-        f"{V4_DOCTRINE} "
-        "Return only JSON with keys rationale and actions. actions is an array of "
-        "objects with keys tool, args, reason. Allowed tools: research, autonomy_cycle, "
-        "market_brief, symbol_research, strategy_ideas, review_positions, screen, metrics, clock, state, wait. Keep to at most 3 actions. "
-        "Use autonomy_cycle for paper orders; it enforces market clock, exits, screening, "
-        "2% buying-power sizing, strategy rules, max positions, and no-candidate decisions. "
-        "If the market is open, do not choose wait until autonomy_cycle has run in the current plan; "
-        "a flat book with no open orders is a reason to screen for entries, not a reason to wait. "
-        "Use market_brief or symbol_research when current market context could change the thesis. "
-        "Use review_positions when open trade theses need to be checked against current conditions. Use strategy_ideas and research "
-        "for web-informed candidate generation, backtesting, and strategy promotion. If market "
-        "is closed, do not request order placement; research, search, or wait instead. Prefer "
-        "simple, useful actions over busywork."
-    )
-    payload = json.dumps(context, default=str)[:50000]
-    try:
-        client = OpenAI(api_key=settings.openai_api_key)
-        response = client.responses.create(
-            model=settings.openai_model,
-            input=f"{system}\n\nContext:\n{payload}",
-        )
-        parsed = _json_from_text(getattr(response, "output_text", "") or "")
-        if not parsed:
-            raise ValueError("operator returned no JSON")
-        actions = []
-        for action in parsed.get("actions") or []:
-            tool = str(action.get("tool") or "").strip()
-            if tool in ALLOWED_TOOLS:
-                actions.append(
+class AutonomyEngine:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self.snapshot = AutonomySnapshot(running=False)
+
+    def status(self) -> Dict[str, Any]:
+        with self._lock:
+            return self._status_unlocked()
+
+    def start(self, alpaca_factory) -> Dict[str, Any]:
+        thread_to_start: Optional[threading.Thread] = None
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return {"ok": True, "status": self._status_unlocked()}
+            self._stop.clear()
+            self.snapshot.running = True
+            thread_to_start = threading.Thread(
+                target=self._loop,
+                args=(alpaca_factory,),
+                name="v4-autonomy",
+                daemon=True,
+            )
+            self._thread = thread_to_start
+        thread_to_start.start()
+        return {"ok": True, "status": self.status()}
+
+    def stop(self) -> Dict[str, Any]:
+        self._stop.set()
+        with self._lock:
+            self.snapshot.running = False
+        return {"ok": True, "status": self.status()}
+
+    def _status_unlocked(self) -> Dict[str, Any]:
+        return {
+            "running": self.snapshot.running,
+            "dry_run": self.settings.autonomy_dry_run,
+            "interval_seconds": self.settings.autonomy_interval_seconds,
+            "symbols": (
+                list(self.settings.autonomy_symbols)
+                if self.settings.autonomy_symbols
+                else "ALL_ACTIVE_TRADABLE_US_EQUITIES"
+            ),
+            "min_score": self.settings.autonomy_min_score,
+            "max_orders_per_cycle": (
+                self.settings.autonomy_max_orders_per_cycle
+                if self.settings.autonomy_max_orders_per_cycle > 0
+                else "unlimited"
+            ),
+            "max_positions": (
+                self.settings.autonomy_max_positions
+                if self.settings.autonomy_max_positions > 0
+                else "unlimited"
+            ),
+            "position_buying_power_pct": self.settings.autonomy_position_buying_power_pct,
+            "screen_symbols_per_cycle": self.settings.autonomy_screen_symbols_per_cycle,
+            "research_enabled": self.settings.autonomy_research_enabled,
+            "research_interval_seconds": self.settings.autonomy_research_interval_seconds,
+            "web_research_enabled": self.settings.autonomy_web_research_enabled,
+            "web_strategy_ideas": self.settings.autonomy_web_strategy_ideas,
+            "agent_operator_enabled": self.settings.agent_operator_enabled,
+            "last_started_at": self.snapshot.last_started_at,
+            "last_finished_at": self.snapshot.last_finished_at,
+            "last_error": self.snapshot.last_error,
+            "last_result": self.snapshot.last_result,
+            "last_research_at": self.snapshot.last_research_at,
+            "last_research_result": self.snapshot.last_research_result,
+            "last_research_error": self.snapshot.last_research_error,
+            "strategy": strategy_snapshot(load_evolution_state(self.settings.data_dir)),
+            "cycles": self.snapshot.cycles,
+        }
+
+    def _loop(self, alpaca_factory) -> None:
+        while not self._stop.is_set():
+            try:
+                alpaca = alpaca_factory()
+                if self.settings.agent_operator_enabled:
+                    self.run_operator_cycle(alpaca)
+                else:
+                    self.maybe_run_research(alpaca)
+                    self.run_cycle(alpaca)
+            except Exception as exc:
+                with self._lock:
+                    self.snapshot.last_error = str(exc)
+                    self.snapshot.last_finished_at = utc_now()
+                append_event(self.settings.data_dir, "autonomy_error", {"error": str(exc)})
+            self._stop.wait(max(10, self.settings.autonomy_interval_seconds))
+        with self._lock:
+            self.snapshot.running = False
+
+    def run_operator_cycle(self, alpaca: AlpacaRest) -> Dict[str, Any]:
+        started = utc_now()
+        with self._lock:
+            self.snapshot.last_started_at = started
+            self.snapshot.last_error = None
+
+        results = []
+        if self.settings.autonomy_research_enabled:
+            scheduled_research = self.maybe_run_research(alpaca)
+            if not scheduled_research.get("skipped"):
+                results.append(
                     {
-                        "tool": tool,
-                        "args": action.get("args") or {},
-                        "reason": action.get("reason") or "",
+                        "tool": "research",
+                        "reason": "scheduled periodic research",
+                        **scheduled_research,
                     }
                 )
-        if not actions:
-            raise ValueError("operator returned no allowed actions")
-        return enforce_autonomy_guardrails(
-            context,
-            {
-                "source": "openai",
-                "rationale": parsed.get("rationale") or "",
-                "actions": actions[:3],
-            },
+
+        state, state_warnings, safe_to_trade = _safe_alpaca_state(alpaca)
+        state["clock"] = _market_clock(alpaca, state)
+        state["state_warnings"] = state_warnings
+        state["safe_to_trade"] = safe_to_trade
+        context = build_operator_context(
+            self.settings,
+            state=state,
+            autonomy_status=self.status(),
         )
-    except Exception as exc:
-        plan = fallback_plan(context)
-        plan["source"] = "fallback_error"
-        plan["error"] = str(exc)
-        return plan
-
-
-def _format_pct(value: Any) -> str:
-    try:
-        return f"{float(value):+.2%}"
-    except (TypeError, ValueError):
-        return "n/a"
-
-
-def summarize_tool_result(result: Dict[str, Any]) -> str:
-    tool = result.get("tool") or "tool"
-    if result.get("ok") is False:
-        return f"{tool}: failed - {result.get('error') or result.get('reply') or 'unknown error'}"
-
-    if result.get("skipped"):
-        reason = result.get("reason") or result.get("skipped")
-        if reason == "not_due":
-            last_at = result.get("last_periodic_research_at") or "unknown"
-            return f"{tool}: skipped - not due yet. Last periodic research: {last_at}."
-        return f"{tool}: skipped - {reason}."
-
-    if result.get("rate_limited"):
-        return f"{tool}: paused - Alpaca rate limit. {result.get('warning') or ''}".strip()
-
-    if tool == "clock":
-        clock = result.get("clock") or {}
-        if clock.get("is_open") is True:
-            return f"clock: market open. Next close: {clock.get('next_close', 'unknown')}."
-        return f"clock: market closed. Next open: {clock.get('next_open', 'unknown')}."
-
-    if tool == "research":
-        research = result.get("research") or {}
-        best = research.get("best") or {}
-        validation = best.get("validation") or {}
-        strategy_id = research.get("best_strategy_id")
-        if strategy_id:
-            selected = research.get("selected_symbols_count")
-            bars_symbols = research.get("bars_symbols", 0)
-            symbol_text = (
-                f"on {bars_symbols} usable symbols ({selected} selected)"
-                if selected
-                else f"on {bars_symbols} symbols"
+        plan = _enforce_operator_autonomy_guardrails(context, model_plan(self.settings, context))
+        for action in plan.get("actions") or []:
+            tool = action.get("tool")
+            args = action.get("args") or {}
+            try:
+                if tool == "research":
+                    result = self.maybe_run_research(alpaca)
+                elif tool == "market_brief":
+                    screen = screen_symbols(
+                        alpaca,
+                        self.settings.autonomy_symbols or None,
+                        max_symbols_per_cycle=self.settings.autonomy_screen_symbols_per_cycle,
+                    )
+                    result = market_brief(self.settings, state=state, screen=screen)
+                elif tool == "symbol_research":
+                    symbol = args.get("symbol") or self._default_research_symbol(state)
+                    result = symbol_research(self.settings, symbol=symbol, state=state)
+                elif tool == "strategy_ideas":
+                    screen = screen_symbols(
+                        alpaca,
+                        self.settings.autonomy_symbols or None,
+                        max_symbols_per_cycle=self.settings.autonomy_screen_symbols_per_cycle,
+                    )
+                    result = strategy_ideas(self.settings, state=state, screen=screen)
+                elif tool == "review_positions":
+                    result = position_review(
+                        self.settings,
+                        state=state,
+                        open_theses=open_trade_theses(self.settings.data_dir),
+                    )
+                elif tool == "autonomy_cycle":
+                    result = self.run_cycle(alpaca)
+                elif tool == "screen":
+                    result = screen_symbols(
+                        alpaca,
+                        self.settings.autonomy_symbols or None,
+                        max_symbols_per_cycle=self.settings.autonomy_screen_symbols_per_cycle,
+                    )
+                elif tool == "metrics":
+                    result = {
+                        "ok": True,
+                        "reply": "Metrics loaded.",
+                        "metrics": build_metrics(alpaca),
+                    }
+                elif tool == "clock":
+                    result = {"ok": True, "reply": "Clock loaded.", "clock": state.get("clock") or alpaca.clock()}
+                elif tool == "state":
+                    result = {"ok": True, "reply": "State loaded.", "state": state}
+                elif tool == "wait":
+                    result = {"ok": True, "reply": action.get("reason") or "Waiting."}
+                else:
+                    result = {"ok": False, "error": f"Unknown operator tool: {tool}"}
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+            results.append(
+                {
+                    "tool": tool,
+                    "reason": action.get("reason"),
+                    **result,
+                }
             )
-            promoted = research.get("promoted")
-            action_text = (
-                f"Deployed {research.get('promoted_strategy_id') or strategy_id}."
-                if promoted is not False
-                else f"Did not deploy {strategy_id}; kept {research.get('active_strategy_id') or 'previous strategy'}."
-            )
-            generated = research.get("variants_generated")
-            tested = research.get("variants_tested", 0)
-            triage = research.get("ai_triage") or {}
-            triage_text = (
-                f"generated {generated}, AI-triaged to {tested}"
-                if triage.get("used") and generated
-                else f"scouted {tested}"
-            )
-            return (
-                f"research: {triage_text} variants "
-                f"and validated {research.get('variants_validated', research.get('variants_tested', 0))} finalists "
-                f"{symbol_text}. "
-                f"AI lab variants {research.get('ai_variants_tested', 0)}. "
-                f"Web variants {research.get('web_variants_tested', 0)}. "
-                f"Mutation variants {research.get('mutation_variants_tested', 0)}. "
-                f"{action_text} "
-                f"Validation return {_format_pct(validation.get('total_return_pct'))}, "
-                f"win rate {_format_pct(validation.get('win_rate'))}, "
-                f"trades {validation.get('trades', 0)}."
-            )
-        return f"research: {result.get('reply') or 'completed'}"
 
-    if tool == "market_brief":
-        return f"market_brief: {result.get('reply') or result.get('brief') or 'completed'}"
-
-    if tool == "symbol_research":
-        symbol = result.get("symbol") or "symbol"
-        return f"symbol_research {symbol}: {result.get('reply') or result.get('research') or 'completed'}"
-
-    if tool == "strategy_ideas":
-        return f"strategy_ideas: {result.get('reply') or result.get('ideas') or 'completed'}"
-
-    if tool == "review_positions":
-        return f"review_positions: {result.get('reply') or result.get('review') or 'completed'}"
-
-    if tool == "autonomy_cycle":
-        autonomy = result.get("autonomy") or result
-        return f"autonomy_cycle: {autonomy.get('summary') or result.get('reply') or 'completed'}"
-
-    if tool == "screen":
-        candidates = result.get("candidates") or (result.get("screen") or {}).get("candidates") or []
-        top = candidates[0].get("symbol") if candidates else "none"
-        return (
-            f"screen: checked {result.get('symbols_checked', 0)} symbols, "
-            f"found {len(candidates)} candidates. Top: {top}."
+        journal = journal_operator_cycle(
+            self.settings.data_dir,
+            plan=plan,
+            results=results,
         )
+        result = {
+            "ok": True,
+            "started_at": started,
+            "finished_at": utc_now(),
+            "summary": journal["summary"],
+            "operator": journal,
+        }
+        append_event(self.settings.data_dir, "agent_operator_cycle", result)
+        with self._lock:
+            self.snapshot.last_finished_at = result["finished_at"]
+            self.snapshot.last_result = result
+            self.snapshot.cycles += 1
+        return result
 
-    if tool == "metrics":
-        metrics = result.get("metrics") or {}
-        return f"metrics: {metrics.get('summary') or result.get('reply') or 'loaded'}"
-
-    if tool == "state":
-        state = result.get("state") or {}
-        account = state.get("account") or {}
+    def _default_research_symbol(self, state: Dict[str, Any]) -> str:
         positions = state.get("positions") or []
-        orders = state.get("open_orders") or []
-        return (
-            f"state: equity ${account.get('equity', 'unknown')}, "
-            f"buying power ${account.get('buying_power', 'unknown')}, "
-            f"positions {len(positions)}, open orders {len(orders)}."
+        if positions:
+            return str(positions[0].get("symbol") or "").upper()
+        open_orders = state.get("open_orders") or []
+        if open_orders:
+            return str(open_orders[0].get("symbol") or "").upper()
+        return "SPY"
+
+    def maybe_run_research(self, alpaca: AlpacaRest) -> Dict[str, Any]:
+        if not self.settings.autonomy_research_enabled:
+            return {"ok": True, "skipped": True, "reason": "research_disabled"}
+        state = load_evolution_state(self.settings.data_dir)
+        last_at = state.get("last_periodic_research_at") or (
+            state.get("last_research") or {}
+        ).get("researched_at")
+        if _seconds_since(last_at) < self.settings.autonomy_research_interval_seconds:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "not_due",
+                "last_periodic_research_at": last_at,
+            }
+
+        try:
+            result = run_research(self.settings, alpaca)
+            state = load_evolution_state(self.settings.data_dir)
+            state["last_periodic_research_at"] = utc_now()
+            save_evolution_state(self.settings.data_dir, state)
+            with self._lock:
+                self.snapshot.last_research_at = state["last_periodic_research_at"]
+                self.snapshot.last_research_result = result
+                self.snapshot.last_research_error = None
+            append_event(self.settings.data_dir, "periodic_research", result)
+            return result
+        except Exception as exc:
+            state = load_evolution_state(self.settings.data_dir)
+            state["last_periodic_research_at"] = utc_now()
+            save_evolution_state(self.settings.data_dir, state)
+            with self._lock:
+                self.snapshot.last_research_at = state["last_periodic_research_at"]
+                self.snapshot.last_research_error = str(exc)
+            append_event(
+                self.settings.data_dir,
+                "periodic_research_error",
+                {"error": str(exc)},
+            )
+            return {"ok": False, "error": str(exc)}
+
+    def run_cycle(self, alpaca: AlpacaRest) -> Dict[str, Any]:
+        started = utc_now()
+        with self._lock:
+            self.snapshot.last_started_at = started
+            self.snapshot.last_error = None
+
+        state, state_warnings, safe_to_trade = _safe_alpaca_state(alpaca)
+        account = state.get("account") or {}
+        clock = _market_clock(alpaca, state)
+        market_open = _is_market_open(clock)
+        positions = state.get("positions") or []
+        open_orders = state.get("open_orders") or []
+        if not safe_to_trade:
+            result = {
+                "ok": False,
+                "started_at": started,
+                "finished_at": utc_now(),
+                "summary": (
+                    "Autonomy cycle paused before screening: could not safely read "
+                    "Alpaca account/positions/orders. No paper orders submitted. "
+                    f"Warnings: {'; '.join(state_warnings) if state_warnings else 'unknown state error'}."
+                ),
+                "market_clock": clock,
+                "state_warnings": state_warnings,
+                "screen": {"ok": False, "candidates": [], "warnings": state_warnings},
+                "actions": [],
+            }
+            append_event(self.settings.data_dir, "autonomy_cycle", result)
+            with self._lock:
+                self.snapshot.last_finished_at = result["finished_at"]
+                self.snapshot.last_result = result
+                self.snapshot.last_error = result["summary"]
+                self.snapshot.cycles += 1
+            return result
+        evolution_state = load_evolution_state(self.settings.data_dir)
+        live_symbols = [str(pos.get("symbol", "")).upper() for pos in positions]
+        for review in close_missing_position_theses(self.settings.data_dir, live_symbols):
+            append_event(self.settings.data_dir, "exit_review", review)
+        remove_missing_positions(
+            evolution_state,
+            live_symbols,
         )
+        local_buying_power = _float(account.get("buying_power"))
+        held = {str(pos.get("symbol", "")).upper() for pos in positions}
+        ordered = {str(order.get("symbol", "")).upper() for order in open_orders}
+        if self.settings.autonomy_max_positions > 0:
+            available_slots = max(0, self.settings.autonomy_max_positions - len(positions))
+        else:
+            available_slots = 10**9
+        if self.settings.autonomy_max_orders_per_cycle > 0:
+            order_slots = min(self.settings.autonomy_max_orders_per_cycle, available_slots)
+        else:
+            order_slots = available_slots
 
-    return f"{tool}: {result.get('reply') or result.get('summary') or result.get('status') or 'completed'}"
+        actions = []
+        exit_actions = []
+        for position in positions:
+            symbol = str(position.get("symbol", "")).upper()
+            if not symbol or symbol in ordered:
+                continue
+            tracked = evolution_state.get("positions", {}).get(symbol) or {}
+            strategy_id = tracked.get("strategy_id") or evolution_state.get("active_strategy_id")
+            strategy = (
+                evolution_state.get("strategies", {}).get(strategy_id)
+                or active_strategy(evolution_state)
+            )
+            plpc = _float(position.get("unrealized_plpc"))
+            age_days = _age_days(tracked.get("opened_at"))
+            reason = ""
+            if plpc >= _float(strategy.get("take_profit_pct")):
+                reason = "take_profit"
+            elif plpc <= _float(strategy.get("stop_loss_pct")):
+                reason = "stop_loss"
+            elif age_days >= _float(strategy.get("max_hold_days"), 10**9):
+                reason = "max_hold"
+            if not reason:
+                continue
+            qty = abs(_float(position.get("qty")))
+            if qty <= 0:
+                continue
+            order_args = {
+                "symbol": symbol,
+                "side": "sell",
+                "qty": qty,
+                "order_type": "market",
+                "time_in_force": self.settings.default_time_in_force,
+                "extended_hours": False,
+            }
+            action: Dict[str, Any] = {
+                "type": "paper_sell_exit",
+                "strategy": strategy,
+                "reason": reason,
+                "plpc": plpc,
+                "age_days": round(age_days, 2),
+                "market_open": market_open,
+                "position": position,
+                "order_args": order_args,
+                "dry_run": self.settings.autonomy_dry_run,
+            }
+            if not market_open:
+                action["skipped"] = "market_closed"
+            elif not self.settings.autonomy_dry_run:
+                try:
+                    action["order"] = alpaca.place_order(**order_args)
+                    action["exit_record"] = tag_exit(
+                        evolution_state,
+                        symbol=symbol,
+                        plpc=plpc,
+                        reason=reason,
+                    )
+                    action["exit_review"] = record_exit_review(
+                        self.settings.data_dir,
+                        build_exit_review(
+                            self.settings.data_dir,
+                            symbol=symbol,
+                            reason=reason,
+                            plpc=plpc,
+                            position=position,
+                            order=action.get("order"),
+                            exit_record=action["exit_record"],
+                        ),
+                    )
+                    append_event(self.settings.data_dir, "exit_review", action["exit_review"])
+                    held.discard(symbol)
+                    ordered.add(symbol)
+                except AlpacaError as exc:
+                    action["error"] = str(exc)
+            exit_actions.append(action)
+            actions.append(action)
 
+        strategy = evolve(evolution_state)
+        symbols = self.settings.autonomy_symbols or None
+        screen = screen_symbols(
+            alpaca,
+            symbols,
+            max_symbols_per_cycle=self.settings.autonomy_screen_symbols_per_cycle,
+            offset=int(evolution_state.get("screen_offset") or 0),
+        )
+        evolution_state["screen_offset"] = screen.get(
+            "next_screen_offset",
+            evolution_state.get("screen_offset", 0),
+        )
+        evolution_state["screen_universe_symbols"] = screen.get("universe_symbols", 0)
+        candidates = sorted(
+            screen.get("candidates", []),
+            key=lambda candidate: adjusted_score(candidate, strategy),
+            reverse=True,
+        )
+        entry_actions = []
+        for candidate in ([] if not market_open else candidates):
+            if len(entry_actions) >= order_slots:
+                break
+            symbol = candidate["symbol"]
+            if self.settings.autonomy_min_score > 0 and candidate["score"] < self.settings.autonomy_min_score:
+                continue
+            if adjusted_score(candidate, strategy) < _float(strategy.get("min_entry_score")):
+                continue
+            if symbol in held or symbol in ordered:
+                continue
+            if local_buying_power <= 1:
+                break
+            notional = round(
+                max(1.0, local_buying_power * self.settings.autonomy_position_buying_power_pct),
+                2,
+            )
+            order_args = {
+                "symbol": symbol,
+                "side": "buy",
+                "notional": notional,
+                "order_type": "market",
+                "time_in_force": self.settings.default_time_in_force,
+                "extended_hours": False,
+            }
+            action: Dict[str, Any] = {
+                "type": "paper_buy_candidate",
+                "strategy": strategy,
+                "candidate": candidate,
+                "adjusted_score": adjusted_score(candidate, strategy),
+                "market_open": market_open,
+                "order_args": order_args,
+                "dry_run": self.settings.autonomy_dry_run,
+            }
+            if not self.settings.autonomy_dry_run:
+                try:
+                    action["order"] = alpaca.place_order(**order_args)
+                    entry_thesis = build_entry_thesis(
+                        self.settings.data_dir,
+                        symbol=symbol,
+                        strategy=strategy,
+                        candidate=candidate,
+                        adjusted_score=adjusted_score(candidate, strategy),
+                        notional=notional,
+                        order=action.get("order"),
+                        market_clock=clock,
+                        account=account,
+                        research_state=evolution_state,
+                        source="autonomy_cycle",
+                    )
+                    action["entry_thesis"] = record_entry_thesis(
+                        self.settings.data_dir,
+                        entry_thesis,
+                    )
+                    append_event(self.settings.data_dir, "entry_thesis", action["entry_thesis"])
+                    tag_entry(
+                        evolution_state,
+                        symbol=symbol,
+                        strategy=strategy,
+                        candidate=candidate,
+                        notional=notional,
+                    )
+                    evolution_state["positions"][symbol]["thesis_id"] = entry_thesis["thesis_id"]
+                    evolution_state["positions"][symbol]["entry_thesis_summary"] = {
+                        "entry_reason": entry_thesis["entry_reason"],
+                        "risk_plan": {
+                            "take_profit_pct": strategy.get("take_profit_pct"),
+                            "stop_loss_pct": strategy.get("stop_loss_pct"),
+                            "max_hold_days": strategy.get("max_hold_days"),
+                        },
+                    }
+                    local_buying_power = max(0.0, local_buying_power - notional)
+                except AlpacaError as exc:
+                    action["error"] = str(exc)
+            entry_actions.append(action)
+            actions.append(action)
 
-def journal_operator_cycle(
-    data_dir: str,
-    *,
-    plan: Dict[str, Any],
-    results: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    lines = [f"Operator plan source: {plan.get('source', 'unknown')}."]
-    rationale = plan.get("rationale")
-    if rationale:
-        lines.append(f"Rationale: {rationale}")
-    for index, result in enumerate(results, start=1):
-        lines.append(f"{index}. {summarize_tool_result(result)}")
-    journal = {
-        "ok": True,
-        "created_at": utc_now(),
-        "summary": "\n".join(lines),
-        "plan": plan,
-        "results": results,
-    }
-    append_event(data_dir, "agent_operator_journal", journal)
-    return journal
+        save_evolution_state(self.settings.data_dir, evolution_state)
+        strategy_report = strategy_snapshot(evolution_state)
+        result = {
+            "ok": True,
+            "started_at": started,
+            "finished_at": utc_now(),
+            "summary": (
+                f"Autonomy screened {screen.get('symbols_checked', 0)} symbols, "
+                f"found {len(screen.get('candidates', []))} candidates, "
+                f"prepared {len(exit_actions)} exit(s) and "
+                f"{len(entry_actions)} entry action(s). "
+                f"Market open: {market_open}. "
+                f"Dry run: {self.settings.autonomy_dry_run}."
+            ),
+            "market_clock": clock,
+            "screen": screen,
+            "state_warnings": state_warnings + list(screen.get("warnings") or []),
+            "strategy": strategy_report,
+            "open_trade_theses": open_trade_theses(self.settings.data_dir),
+            "actions": actions,
+        }
+        append_event(self.settings.data_dir, "autonomy_cycle", result)
+        with self._lock:
+            self.snapshot.last_finished_at = result["finished_at"]
+            self.snapshot.last_result = result
+            self.snapshot.cycles += 1
+        return result
