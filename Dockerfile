@@ -10,9 +10,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Railway/source ZIPs have intermittently arrived with NUL bytes in Python files.
-# Strip only NUL bytes, then compile every Python source file so boot failures are caught at build time.
+# Strip NUL bytes, remove pycache, then compile every Python source file so boot
+# failures are caught at build time. start.py repeats cleanup at runtime as a guard.
 RUN python - <<'PY'
 from pathlib import Path
+import shutil
+for cache in Path('.').rglob('__pycache__'):
+    shutil.rmtree(cache, ignore_errors=True)
 for path in Path('.').rglob('*.py'):
     data = path.read_bytes()
     if b'\x00' in data:
@@ -29,4 +33,4 @@ for path in Path('.').rglob('*.py'):
 print('Python source compile check passed')
 PY
 
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD ["python", "start.py"]

@@ -7,11 +7,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from agent_operator import (
-    build_operator_context,
-    journal_operator_cycle,
-    model_plan,
-)
+
+# Import agent_operator lazily inside run_operator_cycle. Railway deployments have
+# intermittently produced corrupted agent_operator.py files with NUL bytes; a
+# module-level import would prevent the whole app from booting. The deterministic
+# autonomy cycle must stay available even if the optional operator planner is bad.
+
 import alpaca_rest as _alpaca_rest
 
 AlpacaRest = _alpaca_rest.AlpacaRest
@@ -42,6 +43,104 @@ from trade_memory import (
     record_entry_thesis,
     record_exit_review,
 )
+
+
+def _fallback_operator_context(settings: Settings, *, state: Dict[str, Any], autonomy_status: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "settings": {
+            "agent_operator_enabled": getattr(settings, "agent_operator_enabled", False),
+            "autonomy_research_enabled": getattr(settings, "autonomy_research_enabled", False),
+        },
+        "state": state,
+        "autonomy_status": autonomy_status,
+        "positions": state.get("positions") or [],
+        "open_orders": state.get("open_orders") or [],
+        "clock": state.get("clock") or {},
+    }
+
+
+def _fallback_operator_plan(context: Dict[str, Any], error: str | None = None) -> Dict[str, Any]:
+    clock = context.get("clock") or (context.get("state") or {}).get("clock") or {}
+    market_open = _is_market_open(clock)
+    positions = context.get("positions") or (context.get("state") or {}).get("positions") or []
+    open_orders = context.get("open_orders") or (context.get("state") or {}).get("open_orders") or []
+    if market_open:
+        reason = "Fallback operator: market is open, so run deterministic autonomy_cycle before waiting."
+        if error:
+            reason += f" Optional agent_operator unavailable: {error}"
+        return {
+            "source": "fallback_operator",
+            "rationale": reason,
+            "actions": [_operator_autonomy_action(reason)],
+        }
+    return {
+        "source": "fallback_operator",
+        "rationale": "Fallback operator: market is closed; review positions then wait.",
+        "actions": [
+            {"tool": "review_positions", "args": {}, "reason": "Review tracked positions while market is closed."},
+            {"tool": "wait", "args": {}, "reason": "Market is closed."},
+        ],
+    }
+
+
+def _fallback_operator_journal(data_dir: str, *, plan: Dict[str, Any], results: list[Dict[str, Any]]) -> Dict[str, Any]:
+    lines = [f"Operator plan source: {plan.get('source') or 'fallback_operator'}."]
+    if plan.get("rationale"):
+        lines.append(f"Rationale: {plan.get('rationale')}")
+    for idx, action in enumerate(plan.get("actions") or [], start=1):
+        tool = action.get("tool") or "unknown"
+        reason = action.get("reason") or ""
+        lines.append(f"{idx}. {tool}: {reason}")
+    summary = "\n".join(lines)
+    journal = {"ok": True, "summary": summary, "plan": plan, "results": results}
+    try:
+        append_event(data_dir, "operator_journal", journal)
+    except Exception:
+        pass
+    return journal
+
+
+def _load_operator_helpers() -> tuple[Any, Any, Any, str | None]:
+    try:
+        from agent_operator import (  # type: ignore
+            build_operator_context as _build_operator_context,
+            journal_operator_cycle as _journal_operator_cycle,
+            model_plan as _model_plan,
+        )
+        return _build_operator_context, _journal_operator_cycle, _model_plan, None
+    except BaseException as exc:  # noqa: BLE001 - optional planner must not block app boot/trading
+        error = f"{exc.__class__.__name__}: {exc}"
+
+        def _build(settings: Settings, *, state: Dict[str, Any], autonomy_status: Dict[str, Any]) -> Dict[str, Any]:
+            return _fallback_operator_context(settings, state=state, autonomy_status=autonomy_status)
+
+        def _plan(settings: Settings, context: Dict[str, Any]) -> Dict[str, Any]:
+            return _fallback_operator_plan(context, error)
+
+        def _journal(data_dir: str, *, plan: Dict[str, Any], results: list[Dict[str, Any]]) -> Dict[str, Any]:
+            return _fallback_operator_journal(data_dir, plan=plan, results=results)
+
+
+        return _build, _journal, _plan, error
+
+
+def _operator_import_error() -> str | None:
+    return _load_operator_helpers()[3]
+
+
+def build_operator_context(settings: Settings, *, state: Dict[str, Any], autonomy_status: Dict[str, Any]) -> Dict[str, Any]:
+    build, _, _, _ = _load_operator_helpers()
+    return build(settings, state=state, autonomy_status=autonomy_status)
+
+
+def model_plan(settings: Settings, context: Dict[str, Any]) -> Dict[str, Any]:
+    _, _, plan, _ = _load_operator_helpers()
+    return plan(settings, context)
+
+
+def journal_operator_cycle(data_dir: str, *, plan: Dict[str, Any], results: list[Dict[str, Any]]) -> Dict[str, Any]:
+    _, journal, _, _ = _load_operator_helpers()
+    return journal(data_dir, plan=plan, results=results)
 
 
 def _float(value: Any, default: float = 0.0) -> float:
@@ -427,11 +526,15 @@ class AutonomyEngine:
         state["clock"] = _market_clock(alpaca, state)
         state["state_warnings"] = state_warnings
         state["safe_to_trade"] = safe_to_trade
+        operator_import_error = _operator_import_error()
         context = build_operator_context(
             self.settings,
             state=state,
             autonomy_status=self.status(),
         )
+        if operator_import_error:
+            state.setdefault("state_warnings", []).append(f"agent_operator_unavailable: {operator_import_error}")
+            context["agent_operator_import_error"] = operator_import_error
         plan = _enforce_operator_autonomy_guardrails(context, model_plan(self.settings, context))
         for action in plan.get("actions") or []:
             tool = action.get("tool")
